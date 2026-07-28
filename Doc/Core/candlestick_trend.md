@@ -23,6 +23,44 @@ it, producing long/short signals. Code: `Core/candlestick_trend/`.
    trend read purely to decide pattern *identity* (the same shape is a
    different pattern depending on what preceded it).
 
+2b. **`patterns_talib.py`** — the rest of the TA-Lib `CDL*` catalog: ~45
+   more patterns (Two Crows, Three Inside/Outside, Abandoned Baby, Advance
+   Block, Belt Hold, Breakaway, Closing Marubozu, Counterattack, Doji
+   Star, Dragonfly/Gravestone Doji, Gap/Tasuki/Side-by-Side-Gap
+   continuation patterns, Harami Cross, High Wave, Hikkake (+ modified),
+   Homing Pigeon, Identical Three Crows, In-Neck/On-Neck/Thrusting,
+   Kicking By Length, Ladder Bottom, Long-Legged Doji, Long/Short Line,
+   Matching Low, Mat Hold, Morning/Evening Doji Star, Rickshaw Man,
+   Rise/Fall Three Methods, Separating Lines, Stalled Pattern, Stick
+   Sandwich, Takuri, Tri-Star, Unique Three River), ported from
+   [pandas_ta_classic](https://github.com/xgboosted/pandas-ta-classic)
+   (MIT) — a pure-Python, Numba-accelerated reimplementation of TA-Lib's
+   exact `CDL*` algorithms. Kept in its own module rather than merged into
+   `patterns.py`, mirroring how the old codebase split `candlesticks.py`
+   (cm45t3r-derived) from `candlesticks_talib.py` (TA-Lib-derived) — same
+   reasoning: different source, different thresholding philosophy.
+
+   TA-Lib's patterns compare a candle's body/shadow against an **adaptive
+   trailing average** of that measure over the preceding N bars (10 for
+   body settings, 5 for near/far/equal, or the bar's own value when N=0),
+   not a fixed ratio of that same candle's own range — this is genuinely
+   different from `patterns.py`'s style and is *why* this source was
+   chosen over hand-picking more thresholds. That averaging logic lives in
+   **`talib_thresholds.py`**, cached per `(id(df), setting)` and cleared at
+   the start of every `scan()` — recomputing it from scratch at every bar
+   was the dominant cost (~80s for 300 bars before caching; ~1s after).
+
+   Patterns that can fire either direction (e.g. Three Inside, Belt Hold,
+   Harami Cross) are split into `_bullish`/`_bearish` pairs, matching the
+   existing `bullish_X`/`bearish_X` convention — `PATTERN_META` fixes one
+   direction per pattern *name*, so a dual-direction detector can't be
+   registered as a single entry. Two things NOT ported from TA-Lib's full
+   catalog: `CDL_INSIDE` (a generic bar-containment flag, not a Nison
+   reversal/continuation pattern) and `CDLKICKING` (a stricter, marubozu-
+   shaped variant of what `patterns.py` already has as
+   `bullish_kicker`/`bearish_kicker` — same market event; `kickingbylength`
+   *is* ported since it's a meaningfully distinct variant).
+
 3. **`trend.py`** — a continuous, signed trend measure (default: one-step
    % slope of a 10-period SMA of closes, `cm45t3r`'s own default method).
    This is separate from the binary identity gate above: it exists to
@@ -55,9 +93,10 @@ confidence in a *reversal* pattern signaling that trend is about to break.
 
 ## Pros
 
-- Reuses two independently-built, already-vetted implementations
-  (`cm45t3r/candlestick` and Polar's own prior port + calibration fixes)
-  rather than inventing pattern thresholds from scratch.
+- Reuses three independently-built, already-vetted implementations
+  (`cm45t3r/candlestick`, Polar's own prior port + calibration fixes, and
+  `pandas_ta_classic`'s TA-Lib-parity port) rather than inventing pattern
+  thresholds from scratch — 68 patterns total (23 + 45).
 - Correctly distinguishes reversal from continuation expectations, instead
   of the naive "trade bullish patterns in a bullish trend" rule (which is
   backwards for most of the catalog — most classic candlestick patterns
@@ -87,11 +126,17 @@ confidence in a *reversal* pattern signaling that trend is about to break.
 - `type` (reversal/continuation/neutral) per pattern follows standard
   Nison candlestick theory, encoded here — it is not a verbatim copy of
   `cm45t3r/candlestick`'s own internal type table (that wasn't fully
-  captured during research), so a couple of borderline calls (e.g. Marubozu
-  as continuation) are judgment calls worth revisiting.
+  captured during research) or of `pandas_ta_classic`'s (which doesn't
+  supply type/direction/confidence metadata at all — TA-Lib's raw output
+  is just ±100/0), so a number of borderline calls (e.g. Marubozu/Closing
+  Marubozu/Long Line as continuation, High Wave/Long-Legged Doji/Rickshaw
+  Man/Short Line as neutral despite TA-Lib tagging some of these with a
+  raw color-based direction) are judgment calls worth revisiting.
 - No position sizing, stop-loss, or execution model yet — this module only
   emits `long`/`short` signals with a confidence score.
-- Not yet backtested. Sanity-checked only against synthetic fixtures (see
-  `tests/`) and a small real sample — no historical performance validation
-  yet. That's the separate, still-open "backtest over the top 15 USDT
-  pairs" work.
+- Backtested for signal quality (forward returns + MFE/MAE, no trade-
+  management assumptions — see `backtest.py` and its module docstring for
+  why) across the top 15 USDT pairs (mcap > $10M) on Bitget, 4 timeframes,
+  7-day windows. Not yet a P&L-validated system — that requires deciding
+  on (and calibrating) an actual exit rule, which two prior attempts
+  (fixed-bar hold, then 2:1 structural TP/SL) showed isn't settled yet.

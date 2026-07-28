@@ -29,7 +29,8 @@ from dataclasses import dataclass
 import pandas as pd
 
 from Core.candlestick_trend.metadata import PATTERN_META, PatternMeta
-from Core.candlestick_trend.patterns import PatternHit, scan
+from Core.candlestick_trend.patterns import PatternHit, scan as scan_core
+from Core.candlestick_trend.patterns_talib import scan as scan_talib
 from Core.candlestick_trend.trend import DEFAULT_PERIOD, compute_trend
 
 # cm45t3r/candlestick's own default (5.0) assumes measured_trend magnitudes
@@ -100,7 +101,10 @@ def generate_signals(
     `direction == "neutral"` (Doji, Spinning Top) never produce a signal —
     they have nothing to act on, by design."""
     trend_series = compute_trend(df, method=trend_method, period=trend_period)
-    hits: list[PatternHit] = scan(df)
+    # scan_core: cm45t3r-derived patterns (patterns.py); scan_talib: TA-Lib
+    # CDL* catalog ported from pandas_ta_classic (patterns_talib.py). Same
+    # PatternHit shape, same scoring below -- merged before grading.
+    hits: list[PatternHit] = scan_core(df) + scan_talib(df)
 
     signals: list[Signal] = []
     for hit in hits:
