@@ -132,7 +132,7 @@ def test_liquidation_proximity_decreases_with_leverage():
 def test_position_size_pepe_is_halved():
     sig = wh.WeekendHunterSignal(direction="bullish", signal_strength=60.0, final_leverage=10.0, notes="", entry_price=1.0)
     btc_size = wh.position_size_usd(sig, "BTCUSDT")
-    pepe_size = wh.position_size_usd(sig, "1000PEPEUSDT")
+    pepe_size = wh.position_size_usd(sig, "PEPEUSDT")
     assert pepe_size == pytest.approx(btc_size * 0.5)
 
 

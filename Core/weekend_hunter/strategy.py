@@ -95,9 +95,23 @@ MAX_LEVERAGE = 20.0
 
 # Pine: symbol_risk_profile — EXACT coin-specific table from the source.
 # Bitget symbols are "BTCUSDT" (no slash) — matches syminfo.ticker format.
+#
+# Two adaptations for Bitget specifically, both keyed by the SAME
+# underlying asset the source intended, not a change of intent:
+#   - "1000PEPEUSDT" -> "PEPEUSDT". The source's ticker uses the
+#     "1000PEPE" multiplier convention some exchanges (Bybit/Binance
+#     futures) use for extremely low-priced meme coins; Bitget spot lists
+#     the same coin as plain "PEPEUSDT" with no multiplier. Same coin,
+#     same risk profile and pair_multiplier below -- just Bitget's own
+#     denomination, and the creator's own plain-English pair list already
+#     just says "PEPE", not "1000PEPE".
+#   - "TONUSDT" has NO listing on Bitget spot at all (verified against
+#     the live symbols endpoint) -- kept in this table for source fidelity
+#     (and in case a different exchange adds it later) but excluded from
+#     daemon.py's live SYMBOLS list, since there is nothing to fetch.
 SYMBOL_RISK_PROFILE = {
     "BTCUSDT": 0.9, "ETHUSDT": 0.85, "LINKUSDT": 0.75, "XRPUSDT": 0.75,
-    "DOGEUSDT": 0.6, "SOLUSDT": 0.7, "AVAXUSDT": 0.7, "1000PEPEUSDT": 0.5,
+    "DOGEUSDT": 0.6, "SOLUSDT": 0.7, "AVAXUSDT": 0.7, "PEPEUSDT": 0.5,
     "TONUSDT": 0.65, "POLUSDT": 0.7,
 }
 DEFAULT_SYMBOL_RISK_PROFILE = 0.5  # Pine's trailing ": 0.5" fallback
@@ -288,7 +302,7 @@ def position_size_usd(signal: WeekendHunterSignal, symbol: str) -> float:
     desired_position_usd = base_position_usd * position_multiplier
 
     ticker = _pine_ticker(symbol)
-    pair_multiplier = 0.5 if ticker == "1000PEPEUSDT" else 1.0 if ticker in ("BTCUSDT", "ETHUSDT") else 0.8
+    pair_multiplier = 0.5 if ticker == "PEPEUSDT" else 1.0 if ticker in ("BTCUSDT", "ETHUSDT") else 0.8
     return desired_position_usd * pair_multiplier
 
 

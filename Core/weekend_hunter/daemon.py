@@ -10,11 +10,13 @@ public REST API, no auth needed for market data) and
 
     python3 -m Core.weekend_hunter.daemon
 
-Verified against the DAILY chart for BTCUSDT and ETHUSDT specifically —
-that's the default universe and execution timeframe here, not the
-script's own native 15-minute design. The 4h/1h multi-timeframe confluence
-checks are still fetched at their literal timeframes regardless of
-execution timeframe, exactly as the source does.
+Runs the creator's own recommended configuration: 15M execution, 1H
+momentum, 4H trend, across the 10 pairs the script's own
+`symbol_risk_profile` table is keyed on (BTC, ETH, LINK, XRP, DOGE, SOL,
+AVAX, 1000PEPE, TON, POL). The prior version of this daemon ran only
+BTCUSDT/ETHUSDT on the daily chart -- a deliberate deviation the earlier
+codebase had verified manually, not the intended design; corrected here
+to match the creator's actual recommendation.
 """
 from __future__ import annotations
 
@@ -34,11 +36,20 @@ from Core.Library.positions import Position
 from Core.weekend_hunter import positions as store
 from Core.weekend_hunter import strategy as wh
 
-SYMBOLS = ["BTCUSDT", "ETHUSDT"]
-EXEC_TIMEFRAME = "1day"
-HTF_4H = "4h"
-HTF_1H = "1h"
-POLL_SECONDS = 1800  # daily bars change slowly -- no need for a fast poll cadence
+# The creator's 10 pre-configured pairs -- same list as strategy.py's
+# SYMBOL_RISK_PROFILE (that table's keys were always meant to BE the
+# trading universe, not just a risk lookup with an unused fallback) --
+# minus TONUSDT, which Bitget spot does not list at all (verified live
+# against the exchange's symbols endpoint). 9 of the creator's 10 pairs,
+# not 10 -- TON would need a different exchange to actually trade.
+SYMBOLS = [
+    "BTCUSDT", "ETHUSDT", "LINKUSDT", "XRPUSDT", "DOGEUSDT",
+    "SOLUSDT", "AVAXUSDT", "PEPEUSDT", "POLUSDT",
+]
+EXEC_TIMEFRAME = "15min"  # creator spec: "15M execution"
+HTF_4H = "4h"  # creator spec: "4H trend"
+HTF_1H = "1h"  # creator spec: "1H momentum"
+POLL_SECONDS = 300  # 15m bars close every 15 minutes -- poll a few times per bar, not once per bar
 PLATFORM = "bitget"
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
