@@ -48,6 +48,22 @@ BITGET_SYMBOLS_URL = "https://api.bitget.com/api/v2/spot/public/symbols"
 BITGET_CANDLES_URL = "https://api.bitget.com/api/v2/spot/market/candles"
 BITGET_MAX_CANDLES = 1000
 COINGECKO_MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
+COINGECKO_MEME_CATEGORY = "meme-token"  # CoinGecko's own category slug for "Meme" (verified via /coins/categories/list)
+# Category-tagged, not directional crypto assets -- pegged to fiat or gold, so
+# a directional signal engine has nothing to read on them. Checked by category
+# (not just the STABLECOINS ticker set below) because new ones launch
+# regularly: USD1, USDS, RLUSD, and GHO all cleared the old STABLECOINS-only
+# filter undetected until caught by live testing here.
+COINGECKO_NON_DIRECTIONAL_CATEGORIES = ("stablecoins", "tokenized-gold")
+
+# CoinGecko coins confirmed by direct testing to carry NO meme-related
+# category tag at all (verified via /coins/<id> -- 'jelly-my-jelly' comes
+# back tagged only 'Solana Ecosystem', 'Pump.fun Ecosystem', 'Binance Alpha
+# Spotlight', despite being a widely-known joke coin) -- a real gap in
+# CoinGecko's own tagging that `exclude_meme_coins` can't catch by category
+# alone. Small and explicit on purpose: only add an id here once verified,
+# not as a general-purpose meme blocklist.
+KNOWN_MEME_CATEGORY_GAPS = {"jelly-my-jelly"}
 
 STABLECOINS = {"USDC", "USDGO", "USDT", "FDUSD", "TUSD", "DAI", "USDE", "PYUSD"}
 MIN_MARKET_CAP_USD = 10_000_000
@@ -72,21 +88,44 @@ def _fetch_json(url: str) -> list:
         return json.load(resp)["data"]
 
 
-def _coingecko_market_caps(pages: int = 3) -> dict[str, float]:
-    """symbol (uppercase) -> market cap USD, from CoinGecko's public
-    /coins/markets, largest-cap match wins on ticker collisions (e.g. a
-    micro-cap token sharing a ticker with an established coin)."""
-    mcap_by_symbol: dict[str, float] = {}
+def _coingecko_market_caps(pages: int = 3) -> dict[str, dict]:
+    """symbol (uppercase) -> {"market_cap": float, "id": str}, from
+    CoinGecko's public /coins/markets, largest-cap match wins on ticker
+    collisions (e.g. a micro-cap token sharing a ticker with an established
+    coin). Keeping each winning match's CoinGecko `id` (not just its market
+    cap) lets callers cross-reference category membership -- e.g. meme-coin
+    exclusion -- against the SAME coin the market-cap floor matched, rather
+    than re-matching by ticker a second time."""
+    mcap_by_symbol: dict[str, dict] = {}
     for page in range(1, pages + 1):
         coins = _fetch_json_full(f"{COINGECKO_MARKETS_URL}?vs_currency=usd&order=market_cap_desc&per_page=250&page={page}")
         for c in coins:
             sym = c["symbol"].upper()
             mc = c["market_cap"] or 0
-            if sym not in mcap_by_symbol or mc > mcap_by_symbol[sym]:
-                mcap_by_symbol[sym] = mc
+            if sym not in mcap_by_symbol or mc > mcap_by_symbol[sym]["market_cap"]:
+                mcap_by_symbol[sym] = {"market_cap": mc, "id": c["id"]}
         if page < pages:
             time.sleep(8)  # CoinGecko's free public tier rate-limits aggressively
     return mcap_by_symbol
+
+
+def _coingecko_category_coin_ids(category: str, pages: int = 2) -> set[str]:
+    """CoinGecko ids tagged under the given category slug (see
+    /coins/categories/list for valid slugs) -- used to exclude coins from a
+    trading universe by category identity, not by guessing from ticker
+    names."""
+    ids: set[str] = set()
+    for page in range(1, pages + 1):
+        coins = _fetch_json_full(
+            f"{COINGECKO_MARKETS_URL}?vs_currency=usd&order=market_cap_desc"
+            f"&category={category}&per_page=250&page={page}"
+        )
+        if not coins:
+            break
+        ids.update(c["id"] for c in coins)
+        if page < pages:
+            time.sleep(8)
+    return ids
 
 
 def _fetch_json_full(url: str, retries: int = 5) -> list:
@@ -102,16 +141,50 @@ def _fetch_json_full(url: str, retries: int = 5) -> list:
             raise
 
 
-def top_n_crypto_usdt_pairs(n: int = 15, min_market_cap: float = MIN_MARKET_CAP_USD) -> list[str]:
-    """Top `n` USDT spot pairs by 24h volume, restricted to base assets with
-    a CoinGecko market cap above `min_market_cap` -- excludes Bitget's
+def top_n_crypto_usdt_pairs(
+    n: int | None = 15,
+    min_market_cap: float = MIN_MARKET_CAP_USD,
+    coingecko_pages: int = 3,
+    exclude_meme_coins: bool = False,
+    meme_coingecko_pages: int = 2,
+) -> list[str]:
+    """USDT spot pairs by 24h volume, restricted to base assets with a
+    CoinGecko market cap above `min_market_cap` -- excludes Bitget's
     tokenized-stock products (baseCoin prefixed 'r', e.g. rNVDA/rTSLA),
-    stablecoin base assets, and micro-cap/untracked tokens (a coin CoinGecko
-    doesn't even list in its top ~1250 by market cap fails this floor by
-    construction)."""
+    stablecoin/gold-pegged base assets (both the hardcoded STABLECOINS
+    tickers and CoinGecko's own `stablecoins`/`tokenized-gold` categories --
+    the category check catches new pegged assets the hardcoded set hasn't
+    been updated for yet, e.g. USD1/USDS/RLUSD/GHO/XAUT/PAXG), and
+    micro-cap/untracked tokens (a coin CoinGecko doesn't rank within
+    `coingecko_pages` x 250 by market cap fails this floor by construction --
+    raise `coingecko_pages` for fuller coverage when `n` is None/large, at
+    the cost of more CoinGecko calls).
+
+    `n=None` returns EVERY pair meeting the floor, not just the top N --
+    used when a Core wants the full qualifying universe rather than a
+    fixed-size shortlist (e.g. VPA's live daemon scans all of them, where
+    candlestick_trend's backtest only ever wanted a representative top-15).
+
+    `exclude_meme_coins=True` additionally drops any pair whose matched
+    CoinGecko coin is tagged under the 'Meme' category, plus the small
+    documented `KNOWN_MEME_CATEGORY_GAPS` supplement -- a market-cap floor
+    alone doesn't filter these out (DOGE/SHIB/PEPE/BONK/WIF/TRUMP all clear
+    tens or hundreds of millions in market cap on genuine trading volume
+    despite being memecoins). Defaults to False so candlestick_trend's own
+    established backtest convention (this function's other caller) is
+    unaffected -- this is a VPA-specific need, not a global one."""
     symbols = _fetch_json(BITGET_SYMBOLS_URL)
     tickers = _fetch_json(BITGET_TICKERS_URL)
-    mcap_by_symbol = _coingecko_market_caps()
+    mcap_by_symbol = _coingecko_market_caps(pages=coingecko_pages)
+
+    non_directional_ids: set[str] = set()
+    for category in COINGECKO_NON_DIRECTIONAL_CATEGORIES:
+        non_directional_ids |= _coingecko_category_coin_ids(category, pages=2)
+
+    excluded_ids = set(non_directional_ids)
+    if exclude_meme_coins:
+        excluded_ids |= _coingecko_category_coin_ids(COINGECKO_MEME_CATEGORY, pages=meme_coingecko_pages)
+        excluded_ids |= KNOWN_MEME_CATEGORY_GAPS
 
     eligible = {
         s["symbol"]: s["baseCoin"].upper()
@@ -120,11 +193,13 @@ def top_n_crypto_usdt_pairs(n: int = 15, min_market_cap: float = MIN_MARKET_CAP_
         and not s["baseCoin"].startswith("r")
         and s["baseCoin"].upper() not in STABLECOINS
         and s["status"] == "online"
-        and mcap_by_symbol.get(s["baseCoin"].upper(), 0) >= min_market_cap
+        and mcap_by_symbol.get(s["baseCoin"].upper(), {}).get("market_cap", 0) >= min_market_cap
+        and mcap_by_symbol.get(s["baseCoin"].upper(), {}).get("id") not in excluded_ids
     }
     pairs = [t for t in tickers if t["symbol"] in eligible]
     pairs.sort(key=lambda t: float(t["usdtVolume"]), reverse=True)
-    return [t["symbol"] for t in pairs[:n]]
+    selected = pairs if n is None else pairs[:n]
+    return [t["symbol"] for t in selected]
 
 
 def fetch_ohlcv(symbol: str, granularity: str, limit: int) -> pd.DataFrame:

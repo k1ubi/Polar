@@ -45,6 +45,45 @@ Raspberry Pi deployment, which doesn't generalize. Add a Core- or
 deployment-appropriate equivalent once this project has a fixed target to
 monitor.
 
+## `candlestick_trend/backtest.py::top_n_crypto_usdt_pairs()` — universe selection
+
+Picks Bitget USDT spot pairs by 24h volume, restricted to base assets above
+a CoinGecko market-cap floor. Originally built only for candlestick_trend's
+own backtest (top 15 pairs, mcap > $10M — that call's defaults are
+untouched); now shared with VPA's live universe (all pairs above a floor,
+not just a top-N shortlist — pass `n=None`).
+
+Exclusions, layered:
+- Bitget's tokenized-stock products (`baseCoin` prefixed `r`, e.g.
+  rNVDA/rTSLA) and a hardcoded `STABLECOINS` ticker set — always on.
+- **Category-based, always on**: CoinGecko's own `stablecoins` and
+  `tokenized-gold` categories, cross-referenced by each ticker's matched
+  CoinGecko `id` (not re-matched by ticker string). This exists because the
+  hardcoded ticker set alone missed real cases caught by live testing:
+  `USD1`, `USDS`, `RLUSD`, `GHO` (new stablecoins) and `XAUT`/`PAXG`
+  (gold-pegged, non-directional). A ticker named confusingly close to
+  "stable" isn't enough to get excluded by itself — `STABLE` (a real L1
+  token, "Stable" chain, USDT-as-gas) stayed in because it's tagged
+  `Stable Ecosystem`, not `stablecoins`, on CoinGecko.
+- **Category-based, opt-in via `exclude_meme_coins=True`**: CoinGecko's
+  `meme-token` category, plus a small explicit `KNOWN_MEME_CATEGORY_GAPS`
+  supplement for coins verified (by direct `/coins/<id>` lookup) to carry no
+  meme-related category tag at all — e.g. `jelly-my-jelly` comes back
+  tagged only `Solana Ecosystem`/`Pump.fun Ecosystem`/`Binance Alpha
+  Spotlight` despite being a well-known joke coin. Market cap alone doesn't
+  filter memes out: DOGE/SHIB/PEPE/BONK/WIF/TRUMP/FLOKI all clear a $50M+
+  floor on genuine trading volume. Defaults to `False` — candlestick_trend's
+  backtest never asked for this; it's VPA-specific.
+
+Ticker-collision caveat (documented, not fully eliminated): CoinGecko match
+picks the largest-market-cap coin sharing a given ticker, so an obscure
+Bitget listing can in principle still borrow an unrelated coin's cap. Raising
+`coingecko_pages` (more CoinGecko coverage) and the $50M+ floor (VPA's
+choice, vs. candlestick_trend's $10M) both reduce how often this matters in
+practice — verified live: at `min_market_cap=50_000_000, coingecko_pages=4`,
+the resulting ~188-pair universe was manually spot-checked clean of the
+meme/junk contamination that showed up at the $10M floor.
+
 ## `indicators.py` — RSI, MACD, ATR
 
 Standard technical indicators, Wilder-smoothed where that's the
