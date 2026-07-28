@@ -55,7 +55,8 @@ DEFAULT_CONFIDENCE_THRESHOLD = 0.4
 
 @dataclass(frozen=True)
 class Signal:
-    index: int
+    index: int  # position of the LAST candle involved in the match
+    start_index: int  # position of the FIRST candle involved in the match
     pattern: str
     action: str  # "long" | "short" (neutral-direction patterns never reach the threshold meaningfully, see note below)
     type: str  # "reversal" | "continuation" | "neutral"
@@ -118,6 +119,7 @@ def generate_signals(
         signals.append(
             Signal(
                 index=hit.index,
+                start_index=hit.start_index,
                 pattern=hit.pattern,
                 action="long" if meta.direction == "bullish" else "short",
                 type=meta.type,
