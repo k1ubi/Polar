@@ -4,7 +4,7 @@
 
 A self-contained (pandas-only) module that detects classic candlestick
 patterns and grades each one's confidence against the trend that preceded
-it, producing long/short signals. Code: `Core/candlestick_trend/`.
+it, producing long/short signals. Code: `Core/Library/candlestick_trend/`.
 
 ## How it works
 

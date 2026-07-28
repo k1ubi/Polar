@@ -12,9 +12,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from Core.candlestick_trend.backtest import fetch_ohlcv
-from Core.candlestick_trend.patterns_talib import _TALIB_DETECTORS, scan
-from Core.candlestick_trend.signal import generate_signals
+from Core.Library.candlestick_trend.backtest import fetch_ohlcv
+from Core.Library.candlestick_trend.patterns_talib import _TALIB_DETECTORS, scan
+from Core.Library.candlestick_trend.signal import generate_signals
 
 BASELINE_BARS = 20  # comfortably above every ported pattern's lookback need
 
@@ -108,7 +108,7 @@ def test_generate_signals_integrates_talib_patterns_without_crashing():
 
 
 def test_every_registered_pattern_has_metadata():
-    from Core.candlestick_trend.metadata import PATTERN_META
+    from Core.Library.candlestick_trend.metadata import PATTERN_META
 
     missing = set(_TALIB_DETECTORS) - set(PATTERN_META)
     assert not missing, f"registered TA-Lib patterns missing PATTERN_META entries: {missing}"

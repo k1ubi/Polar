@@ -28,10 +28,10 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from Core.candlestick_trend.metadata import PATTERN_META, PatternMeta
-from Core.candlestick_trend.patterns import PatternHit, scan as scan_core
-from Core.candlestick_trend.patterns_talib import scan as scan_talib
-from Core.candlestick_trend.trend import DEFAULT_PERIOD, compute_trend
+from Core.Library.candlestick_trend.metadata import PATTERN_META, PatternMeta
+from Core.Library.candlestick_trend.patterns import PatternHit, scan as scan_core
+from Core.Library.candlestick_trend.patterns_talib import scan as scan_talib
+from Core.Library.candlestick_trend.trend import DEFAULT_PERIOD, compute_trend
 
 # cm45t3r/candlestick's own default (5.0) assumes measured_trend magnitudes
 # far larger than what sma-slope(10) actually produces on real hourly crypto

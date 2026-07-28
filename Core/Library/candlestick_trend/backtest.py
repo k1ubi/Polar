@@ -29,7 +29,7 @@ down on higher timeframes (which move a larger % per bar and so measure a
 structurally larger trend magnitude), rather than silently re-tuning it
 away.
 
-Usage: python -m Core.candlestick_trend.backtest
+Usage: python -m Core.Library.candlestick_trend.backtest
 """
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from Core.candlestick_trend.signal import generate_signals
+from Core.Library.candlestick_trend.signal import generate_signals
 
 BITGET_TICKERS_URL = "https://api.bitget.com/api/v2/spot/market/tickers"
 BITGET_SYMBOLS_URL = "https://api.bitget.com/api/v2/spot/public/symbols"

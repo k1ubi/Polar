@@ -4,3 +4,7 @@ __pycache__/
 .pytest_cache/
 .env
 .DS_Store
+
+# Runtime state (position stores, dedup/offset files) -- not source, one
+# per Core under Core/<name>/data/.
+Core/*/data/

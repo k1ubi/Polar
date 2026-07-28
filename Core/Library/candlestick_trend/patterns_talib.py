@@ -37,10 +37,10 @@ from __future__ import annotations
 
 import pandas as pd
 
-from Core.candlestick_trend import talib_thresholds
-from Core.candlestick_trend.geometry import body_ends
-from Core.candlestick_trend.patterns import PatternHit
-from Core.candlestick_trend.talib_thresholds import Setting, threshold
+from Core.Library.candlestick_trend import talib_thresholds
+from Core.Library.candlestick_trend.geometry import body_ends
+from Core.Library.candlestick_trend.patterns import PatternHit
+from Core.Library.candlestick_trend.talib_thresholds import Setting, threshold
 
 
 def _split(raw_fn):

@@ -1,4 +1,4 @@
-"""Synthetic-fixture sanity checks for Core/candlestick_trend.
+"""Synthetic-fixture sanity checks for Core/Library/candlestick_trend.
 
 No real market data here on purpose — these confirm the mechanism (pattern
 identity flips with trend context, confidence grades correctly, causality
@@ -10,10 +10,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from Core.candlestick_trend.patterns import scan
-from Core.candlestick_trend.signal import context_fit, expected_direction, generate_signals
-from Core.candlestick_trend.metadata import PATTERN_META
-from Core.candlestick_trend.trend import compute_trend, prior_trend_binary
+from Core.Library.candlestick_trend.patterns import scan
+from Core.Library.candlestick_trend.signal import context_fit, expected_direction, generate_signals
+from Core.Library.candlestick_trend.metadata import PATTERN_META
+from Core.Library.candlestick_trend.trend import compute_trend, prior_trend_binary
 
 N_TREND_BARS = 60  # > IDENTITY_TREND_LOOKBACK (50) and >> trend.py's default period (10)
 

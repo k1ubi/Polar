@@ -24,11 +24,11 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from Core.candlestick_trend.geometry import (
+from Core.Library.candlestick_trend.geometry import (
     body_ends, body_len, candle_range, has_gap_down, has_gap_up,
     is_bearish, is_bullish, is_engulfed, tail_len, wick_len,
 )
-from Core.candlestick_trend.trend import prior_trend_binary
+from Core.Library.candlestick_trend.trend import prior_trend_binary
 
 
 @dataclass(frozen=True)
