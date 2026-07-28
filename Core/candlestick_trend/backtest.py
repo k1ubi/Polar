@@ -1,27 +1,25 @@
-"""Quick sanity backtest: candlestick_trend's signals over a recent window,
-across a universe of pairs and multiple timeframes, on Bitget spot data via
-its public REST API (no auth, no ccxt dependency).
+"""Signal-quality check for candlestick_trend, across a universe of pairs
+and multiple timeframes, on Bitget spot data via its public REST API (no
+auth, no ccxt dependency).
 
-This is NOT a rigorous backtest -- the Core has no position-sizing or
-execution model yet (see Doc/Core/candlestick_trend.md). To turn a signal
-into a number, this script enters at the NEXT bar's open after the signal
-bar closes (no lookahead) and exits on a structural 2:1 take-profit /
-stop-loss bracket:
+This deliberately does NOT model any trade management (no stop-loss, no
+take-profit, no holding-period rule) -- two earlier attempts (a fixed
+holding period, then a structural 2:1 TP/SL) both showed weak results, and
+there was no way to tell whether that meant the signals themselves lack
+directional edge, or just that the exit rule was a bad fit. This measures
+the signals on their own terms instead:
 
-  - stop  = the low (long) / high (short) of the candle(s) the pattern
-            itself is built from -- the level a candlestick trader would
-            actually place a stop at, not an arbitrary %.
-  - target = entry +/- RISK_REWARD * (entry - stop), i.e. 2x the distance
-             risked.
-  - whichever level is touched first (by bar high/low, scanning forward up
-    to MAX_HOLD_BARS) closes the trade; if neither is touched in that
-    window, it closes at that bar's close ("time exit").
-  - if a single bar's range touches BOTH levels, this assumes the stop
-    hit first (the standard conservative simplifying assumption when you
-    don't have intra-bar path data -- it never gives the trade credit for
-    ambiguous luck).
+  - forward return at fixed horizons (1/3/5/10 bars after entry), signed
+    for the signal's direction -- does price move the way the signal said,
+    on average, independent of any exit rule?
+  - MFE (max favorable excursion) / MAE (max adverse excursion) within
+    EXCURSION_WINDOW bars -- how far did price move in your favor before
+    it moved against you, and vice versa? A signal with MFE consistently
+    well above MAE has room for *some* profitable stop/target; one where
+    they're close or MAE dominates doesn't, no matter how it's traded.
 
-Still no fees/slippage modeled.
+Entry is still the NEXT bar's open after the signal bar closes (no
+lookahead). No fees/slippage modeled.
 
 `signal.py`'s default `sensitivity=150` was empirically tuned against 1h
 BTC/USDT data specifically (see its module docstring) -- this script runs
@@ -56,8 +54,8 @@ MIN_MARKET_CAP_USD = 10_000_000
 
 REPORT_WINDOW_DAYS = 7
 WARMUP_BARS = 100  # >> IDENTITY_TREND_LOOKBACK (50) with headroom, same across all timeframes
-RISK_REWARD = 2.0  # take-profit distance = RISK_REWARD * stop-loss distance
-MAX_HOLD_BARS = 50  # cap on how long to wait for TP/SL before a time-based exit, in bars
+FORWARD_HORIZONS = (1, 3, 5, 10)  # bars after entry
+EXCURSION_WINDOW = 20  # bars, for MFE/MAE -- covers the longest horizon plus margin
 
 # granularity -> bars per day, so we know how many report-window bars to ask for
 TIMEFRAMES = {
@@ -141,7 +139,7 @@ def fetch_ohlcv(symbol: str, granularity: str, limit: int) -> pd.DataFrame:
 
 
 @dataclass
-class Trade:
+class SignalRecord:
     symbol: str
     timeframe: str
     pattern: str
@@ -149,25 +147,25 @@ class Trade:
     signal_time: pd.Timestamp
     entry_time: pd.Timestamp
     entry_price: float
-    stop_price: float
-    target_price: float
-    exit_time: pd.Timestamp
-    exit_price: float
-    exit_reason: str  # "tp" | "sl" | "time"
     effective_confidence: float
-    return_pct: float
+    fwd_ret_1: float | None
+    fwd_ret_3: float | None
+    fwd_ret_5: float | None
+    fwd_ret_10: float | None
+    mfe: float | None
+    mae: float | None
 
 
-def simulate(
+def measure(
     df: pd.DataFrame,
     symbol: str,
     timeframe: str,
     report_start: pd.Timestamp,
-    risk_reward: float = RISK_REWARD,
-    max_hold_bars: int = MAX_HOLD_BARS,
-) -> list[Trade]:
+    horizons: tuple[int, ...] = FORWARD_HORIZONS,
+    excursion_window: int = EXCURSION_WINDOW,
+) -> list[SignalRecord]:
     signals = generate_signals(df)
-    trades: list[Trade] = []
+    records: list[SignalRecord] = []
     for sig in signals:
         signal_time = df.index[sig.index]
         if signal_time < report_start:
@@ -176,42 +174,24 @@ def simulate(
         if entry_pos >= len(df):
             continue  # not enough bars left to even enter
         entry_price = df["open"].iloc[entry_pos]
+        sign = 1 if sig.action == "long" else -1
 
-        pattern_bars = df.iloc[sig.start_index : sig.index + 1]
+        fwd_ret = {}
+        for h in horizons:
+            pos = entry_pos + h
+            fwd_ret[h] = sign * (df["close"].iloc[pos] - entry_price) / entry_price if pos < len(df) else None
+
+        window_end = min(entry_pos + excursion_window, len(df) - 1)
+        window = df.iloc[entry_pos : window_end + 1]
         if sig.action == "long":
-            stop = pattern_bars["low"].min()
-            risk = entry_price - stop
+            mfe = (window["high"].max() - entry_price) / entry_price
+            mae = (entry_price - window["low"].min()) / entry_price
         else:
-            stop = pattern_bars["high"].max()
-            risk = stop - entry_price
-        if risk <= 0:
-            continue  # entry already gapped past the pattern's own structural stop -- degenerate, skip
+            mfe = (entry_price - window["low"].min()) / entry_price
+            mae = (window["high"].max() - entry_price) / entry_price
 
-        target = entry_price + risk_reward * risk if sig.action == "long" else entry_price - risk_reward * risk
-
-        exit_pos, exit_price, exit_reason = None, None, "time"
-        last_pos = min(entry_pos + max_hold_bars, len(df) - 1)
-        for pos in range(entry_pos, last_pos + 1):
-            bar = df.iloc[pos]
-            if sig.action == "long":
-                hit_sl, hit_tp = bar["low"] <= stop, bar["high"] >= target
-            else:
-                hit_sl, hit_tp = bar["high"] >= stop, bar["low"] <= target
-            if hit_sl:  # stop wins ties within the same bar -- conservative, see module docstring
-                exit_pos, exit_price, exit_reason = pos, stop, "sl"
-                break
-            if hit_tp:
-                exit_pos, exit_price, exit_reason = pos, target, "tp"
-                break
-        if exit_pos is None:
-            exit_pos = last_pos
-            exit_price = df["close"].iloc[exit_pos]
-            exit_reason = "time"
-
-        raw_return = (exit_price - entry_price) / entry_price
-        return_pct = raw_return if sig.action == "long" else -raw_return
-        trades.append(
-            Trade(
+        records.append(
+            SignalRecord(
                 symbol=symbol,
                 timeframe=timeframe,
                 pattern=sig.pattern,
@@ -219,66 +199,84 @@ def simulate(
                 signal_time=signal_time,
                 entry_time=df.index[entry_pos],
                 entry_price=entry_price,
-                stop_price=stop,
-                target_price=target,
-                exit_time=df.index[exit_pos],
-                exit_price=exit_price,
-                exit_reason=exit_reason,
                 effective_confidence=sig.effective_confidence,
-                return_pct=return_pct,
+                fwd_ret_1=fwd_ret[1],
+                fwd_ret_3=fwd_ret[3],
+                fwd_ret_5=fwd_ret[5],
+                fwd_ret_10=fwd_ret[10],
+                mfe=mfe,
+                mae=mae,
             )
         )
-    return trades
+    return records
 
 
-def run(n_pairs: int = 15, timeframes: dict[str, int] = TIMEFRAMES) -> list[Trade]:
+def run(n_pairs: int = 15, timeframes: dict[str, int] = TIMEFRAMES) -> list[SignalRecord]:
     symbols = top_n_crypto_usdt_pairs(n_pairs)
-    all_trades: list[Trade] = []
+    all_records: list[SignalRecord] = []
     for timeframe, bars_per_day in timeframes.items():
         report_bars = REPORT_WINDOW_DAYS * bars_per_day
         limit = report_bars + WARMUP_BARS
         for symbol in symbols:
             df = fetch_ohlcv(symbol, timeframe, limit)
             report_start = df.index[-1] - pd.Timedelta(days=REPORT_WINDOW_DAYS)
-            all_trades.extend(simulate(df, symbol, timeframe, report_start))
-    return all_trades
+            all_records.extend(measure(df, symbol, timeframe, report_start))
+    return all_records
 
 
-def summarize(trades: list[Trade]) -> pd.DataFrame:
-    """One row per (symbol, timeframe): trades, wins, losses, win rate,
-    total PnL % (sum of per-trade returns), avg PnL % per trade, and how
-    many trades closed via each exit reason (tp/sl/time)."""
-    if not trades:
-        return pd.DataFrame(columns=["symbol", "timeframe", "trades", "wins", "losses", "win_rate", "total_pnl_pct", "avg_pnl_pct", "tp_exits", "sl_exits", "time_exits"])
-    df = pd.DataFrame([t.__dict__ for t in trades])
+def _summarize(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
     rows = []
-    for (symbol, timeframe), group in df.groupby(["symbol", "timeframe"]):
-        wins = int((group["return_pct"] > 0).sum())
-        losses = int((group["return_pct"] <= 0).sum())
-        rows.append(
-            {
-                "symbol": symbol,
-                "timeframe": timeframe,
-                "trades": len(group),
-                "wins": wins,
-                "losses": losses,
-                "win_rate": wins / len(group),
-                "total_pnl_pct": group["return_pct"].sum() * 100,
-                "avg_pnl_pct": group["return_pct"].mean() * 100,
-                "tp_exits": int((group["exit_reason"] == "tp").sum()),
-                "sl_exits": int((group["exit_reason"] == "sl").sum()),
-                "time_exits": int((group["exit_reason"] == "time").sum()),
-            }
-        )
-    order = list(TIMEFRAMES)
-    result = pd.DataFrame(rows)
-    result["timeframe"] = pd.Categorical(result["timeframe"], categories=order, ordered=True)
-    return result.sort_values(["timeframe", "symbol"]).reset_index(drop=True)
+    for key, group in df.groupby(group_cols):
+        key = key if isinstance(key, tuple) else (key,)
+        row = dict(zip(group_cols, key))
+        row["n"] = len(group)
+        for h in FORWARD_HORIZONS:
+            col = f"fwd_ret_{h}"
+            valid = group[col].dropna()
+            row[f"hit_rate_{h}"] = (valid > 0).mean() if len(valid) else None
+            row[f"avg_fwd_ret_{h}_pct"] = valid.mean() * 100 if len(valid) else None
+        row["avg_mfe_pct"] = group["mfe"].mean() * 100
+        row["avg_mae_pct"] = group["mae"].mean() * 100
+        row["mfe_mae_ratio"] = (group["mfe"].mean() / group["mae"].mean()) if group["mae"].mean() > 0 else None
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def summarize_by_pattern(records: list[SignalRecord]) -> pd.DataFrame:
+    """One row per pattern, pooled across every pair and timeframe -- does
+    this pattern have directional edge at all, independent of instrument
+    or timeframe?"""
+    if not records:
+        return pd.DataFrame()
+    df = pd.DataFrame([r.__dict__ for r in records])
+    return _summarize(df, ["pattern"]).sort_values("n", ascending=False).reset_index(drop=True)
+
+
+def summarize_by_timeframe(records: list[SignalRecord]) -> pd.DataFrame:
+    """One row per timeframe, pooled across every pair and pattern."""
+    if not records:
+        return pd.DataFrame()
+    df = pd.DataFrame([r.__dict__ for r in records])
+    result = _summarize(df, ["timeframe"])
+    result["timeframe"] = pd.Categorical(result["timeframe"], categories=list(TIMEFRAMES), ordered=True)
+    return result.sort_values("timeframe").reset_index(drop=True)
+
+
+def summarize_by_pattern_and_timeframe(records: list[SignalRecord]) -> pd.DataFrame:
+    """One row per (pattern, timeframe) -- the full detail cut."""
+    if not records:
+        return pd.DataFrame()
+    df = pd.DataFrame([r.__dict__ for r in records])
+    result = _summarize(df, ["pattern", "timeframe"])
+    result["timeframe"] = pd.Categorical(result["timeframe"], categories=list(TIMEFRAMES), ordered=True)
+    return result.sort_values(["timeframe", "pattern"]).reset_index(drop=True)
 
 
 if __name__ == "__main__":
-    trades = run()
-    summary = summarize(trades)
-    print(f"{len(trades)} total trades across {REPORT_WINDOW_DAYS} days, {len(TIMEFRAMES)} timeframes")
-    with pd.option_context("display.max_rows", None, "display.width", 140):
-        print(summary.to_string(index=False))
+    records = run()
+    print(f"{len(records)} total signals across {REPORT_WINDOW_DAYS} days, {len(TIMEFRAMES)} timeframes")
+    with pd.option_context("display.max_rows", None, "display.width", 160):
+        print("\n=== by timeframe ===")
+        print(summarize_by_timeframe(records).to_string(index=False))
+        print("\n=== by pattern ===")
+        print(summarize_by_pattern(records).to_string(index=False))
