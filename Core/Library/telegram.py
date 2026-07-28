@@ -73,10 +73,10 @@ class TelegramNotifier:
             )
         self._base = f"https://api.telegram.org/bot{self.bot_token}"
 
-    def send(self, message: str) -> None:
+    def send(self, message: str, reply_markup: dict | None = None) -> None:
         """Fire and forget. Use send_tracked() when the caller needs the
         message_id back (e.g. to edit it later on TP/SL)."""
-        self.send_tracked(message)
+        self.send_tracked(message, reply_markup=reply_markup)
 
     def send_tracked(self, message: str, reply_markup: dict | None = None) -> int | None:
         payload = {"chat_id": self.chat_id, "text": message, "parse_mode": "HTML"}

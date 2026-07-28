@@ -305,23 +305,29 @@ def main() -> None:
             # Every command handler is isolated so one failure just gets
             # logged, never takes the whole listener down.
             try:
+                # reply_markup is attached to EVERY response, not just
+                # /start -- a keyboard only sent once can silently vanish
+                # from the client (a service restart doesn't replay /start,
+                # and Telegram clients let a user collapse a persistent
+                # keyboard via a small UI toggle). Reasserting it on every
+                # reply means it can never get permanently lost.
                 if text in ("/start",):
                     notifier.send_tracked(
                         "Polar bot connected. Use the buttons below or /positions, /report.",
                         reply_markup=tg.PERSISTENT_KEYBOARD,
                     )
                 elif text in ("/positions", tg.BUTTON_POSITIONS):
-                    notifier.send(handle_positions())
+                    notifier.send(handle_positions(), reply_markup=tg.PERSISTENT_KEYBOARD)
                 elif text in ("/report", tg.BUTTON_REPORT):
-                    notifier.send(handle_report())
+                    notifier.send(handle_report(), reply_markup=tg.PERSISTENT_KEYBOARD)
                 elif text in ("/weekendhunter", tg.BUTTON_WEEKEND_HUNTER):
-                    notifier.send(handle_weekend_hunter())
+                    notifier.send(handle_weekend_hunter(), reply_markup=tg.PERSISTENT_KEYBOARD)
                 elif text in ("/pending", tg.BUTTON_PENDING):
-                    notifier.send(handle_pending())
+                    notifier.send(handle_pending(), reply_markup=tg.PERSISTENT_KEYBOARD)
                 elif text in ("/statistics", tg.BUTTON_STATISTICS):
-                    notifier.send(handle_statistics())
+                    notifier.send(handle_statistics(), reply_markup=tg.PERSISTENT_KEYBOARD)
                 elif text in ("/status", tg.BUTTON_STATUS):
-                    notifier.send(handle_status())
+                    notifier.send(handle_status(), reply_markup=tg.PERSISTENT_KEYBOARD)
             except Exception as exc:  # noqa: BLE001 - must never crash the listener
                 print(f"[polar] failed to handle {text!r}: {exc}", flush=True)
 
