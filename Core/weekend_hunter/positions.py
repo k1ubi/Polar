@@ -65,14 +65,29 @@ def realized_pnl_today() -> float:
 
 
 def realized_pnl_this_weekend() -> float:
-    """Pine resets weekend_pnl on Monday — approximated as PnL from
-    positions closed since the most recent Saturday 00:00 UTC."""
+    """Pine: `weekend_pnl` only ever accumulates a closed trade's PnL when
+    `is_weekend` is true AT THE MOMENT IT CLOSES (`if is_weekend:
+    weekend_pnl := weekend_pnl + trade_pnl`), and resets to 0 every Monday
+    (`if dayofmonth != last_day: ... if dayofweek == dayofweek.monday:
+    weekend_pnl := 0.0`).
+
+    A position opened Saturday/Sunday can still be sitting open into the
+    following week and close on, say, Wednesday (TP/SL isn't gated to
+    weekends, only new entries are) — that Wednesday close must NOT count
+    toward weekend_pnl, since it didn't close on a weekend day and Pine's
+    own reset would already have zeroed the accumulator by then. The
+    window is therefore capped at the following Monday 00:00 UTC, not
+    left open-ended from the most recent Saturday."""
     now = datetime.now(timezone.utc)
     days_since_saturday = (now.weekday() - 5) % 7
     weekend_start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days_since_saturday)
+    weekend_end = weekend_start + timedelta(days=2)  # following Monday 00:00 -- Pine's reset point
     total = 0.0
     for p in closed_positions():
-        if p.closed_at and datetime.fromisoformat(p.closed_at) >= weekend_start:
+        if not p.closed_at:
+            continue
+        closed_at = datetime.fromisoformat(p.closed_at)
+        if weekend_start <= closed_at < weekend_end:
             total += p.pnl_usdt or 0.0
     return total
 

@@ -72,7 +72,7 @@ def format_signal_message(symbol: str, signal: wh.WeekendHunterSignal, tp: float
         ("Position", f"{margin_usd:.2f} USDT (unleveraged)"),
     ]
     return (
-        f"🎯 <b>[Weekend Scalper]</b> {side_emoji} <b>{symbol}</b> — {side_label}\n\n"
+        f"🎯 <b>[Weekend Hunter]</b> {side_emoji} <b>{symbol}</b> — {side_label}\n\n"
         f"📊 Weekend Hunter (faithful port): {signal.notes}\n\n"
         f"{tg.row_block(rows)}\n\n"
         f"<i>Signal only — no order placed. Separate test track, isolated wallet.</i>"
@@ -89,7 +89,7 @@ def format_closed_message(position: Position) -> str:
         ("PnL", f"{position.pnl_usdt:+.2f} USDT"),
     ]
     return (
-        f"🎯 <b>[Weekend Scalper]</b> {banner}\n"
+        f"🎯 <b>[Weekend Hunter]</b> {banner}\n"
         f"<b>{position.symbol}</b> — {side_label}\n\n"
         f"{tg.row_block(rows)}\n\n"
         f"<i>Opened {tg.fmt_time(position.opened_at)} — closed {tg.fmt_time(position.closed_at)}</i>"

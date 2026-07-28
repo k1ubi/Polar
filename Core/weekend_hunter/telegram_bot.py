@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Telegram command listener — answers /positions, /report, /weekendscalper,
+"""Telegram command listener — answers /positions, /report, /weekendhunter,
 /pending, /statistics (and the matching persistent keyboard buttons).
 
 Separate process from daemon.py: the daemon only ever PUSHES alerts, it
@@ -12,23 +12,24 @@ experience.
 Read-only against Core.weekend_hunter.positions' store — never places an
 order, never touches the strategy.
 
-NOTE on /positions and /report vs /weekendscalper: Weekend Hunter is
+NOTE on /positions and /report vs /weekendhunter: Weekend Hunter is
 currently the only live Core in this project, so all three read the exact
 same store today (fed by Core.weekend_hunter.positions). /positions and
 /report are the general-purpose commands, meant to become a combined view
-once a second Core goes live and pushes into its own store; /weekendscalper
+once a second Core goes live and pushes into its own store; /weekendhunter
 is the strategy-specific view and will keep showing Weekend Hunter only,
 even then. No design decision is being deferred by this overlap — there is
 just nothing else to combine yet.
 
-No /status command here (unlike the prior codebase's version) — that
-queried systemd services on a specific Pi deployment, which doesn't apply
-wherever this bot actually runs. Add a Core-appropriate equivalent once
-this has a fixed deployment target.
+/status queries `systemctl --user` for this deployment's own two
+services (polar-weekend-hunter, polar-weekend-hunter-bot -- see the unit
+files under ~/.config/systemd/user/), not a generic Pi-wide service list.
 """
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -38,6 +39,13 @@ load_dotenv()
 from Core.Library import telegram as tg
 from Core.Library.candlestick_trend.backtest import fetch_ohlcv
 from Core.weekend_hunter import positions as store
+
+# This deployment's own systemd --user services (see the unit files under
+# ~/.config/systemd/user/) -- queried directly via `systemctl --user show`
+# rather than reading anything Polar itself wrote, so a service that's
+# hung or crash-looping still shows up accurately (a daemon can't
+# self-report that it's stuck).
+SERVICES = ["polar-weekend-hunter", "polar-weekend-hunter-bot"]
 
 OFFSET_PATH = Path(__file__).resolve().parent / "data" / "telegram_bot_offset.json"
 MAX_POSITIONS_SHOWN = 15  # Telegram messages cap at 4096 chars
@@ -146,7 +154,7 @@ def handle_report() -> str:
     return "\n".join(lines)
 
 
-def handle_weekend_scalper() -> str:
+def handle_weekend_hunter() -> str:
     """Dedicated Weekend Hunter view. See module docstring — identical data
     to /positions and /report for now, since it's the only live Core."""
     open_pos = store.open_positions()
@@ -158,7 +166,7 @@ def handle_weekend_scalper() -> str:
     win_rate = len(wins) / len(closed) * 100 if closed else 0.0
 
     lines = [
-        "🎯 <b>Weekend Scalper report</b> (Weekend Hunter faithful port)",
+        "🎯 <b>Weekend Hunter report</b> (Weekend Hunter faithful port)",
         "",
         f"Closed trades: {len(closed)} ({len(wins)}W / {len(losses)}L, {win_rate:.1f}% win rate)",
         f"Open positions: {len(open_pos)}",
@@ -177,14 +185,25 @@ def handle_weekend_scalper() -> str:
 
 
 def handle_pending() -> str:
-    """Weekend Hunter enters directly on signal — there is no break-and-
-    retest gate (unlike the prior codebase's pattern-confluence engine), so
-    there is structurally nothing to be "pending." Kept as a command (the
-    prior bot had one) so the slot is ready if a future Core adds a staged
-    entry, rather than silently dropped."""
+    """Pending trades are VPA's, not Weekend Hunter's -- Weekend Hunter
+    enters directly on signal, nothing ever stages there. VPA's own
+    `analyse()`/`build_setups()` (Core/vpa/analysis.py) can identify a
+    setup that hasn't fully confirmed yet -- e.g. a breakout waiting on a
+    low-volume retest (Ch7's "test of supply/demand" before it resolves
+    pass/fail) -- which is exactly the "pending" concept this command is
+    for.
+
+    VPA has no live daemon feeding this bot yet (it only runs against
+    historical data today, see Doc/Core/vpa.md), so there is nothing to
+    show here until that exists -- this is an honest "not built yet," not
+    "nothing will ever be pending."
+    """
     return (
-        "No pending trades — Weekend Hunter enters directly on signal, "
-        "there's no break-and-retest staging step for it to wait on."
+        "No pending trades right now.\n\n"
+        "Weekend Hunter enters directly on signal — nothing ever stages there. "
+        "Pending trades would come from VPA (e.g. a breakout waiting on a "
+        "low-volume retest before it's confirmed) once VPA has a live daemon "
+        "feeding this bot — that doesn't exist yet."
     )
 
 
@@ -219,12 +238,45 @@ def handle_statistics() -> str:
     return "\n\n".join(lines)
 
 
+def handle_status() -> str:
+    """systemd --user status of this deployment's own services. Queries
+    `systemctl --user` directly (not anything Polar itself wrote) so a
+    hung or crash-looping daemon still shows up accurately."""
+    if shutil.which("systemctl") is None:
+        return "⚡️ <b>Status</b>\n\n<i>systemctl not available on this machine.</i>"
+
+    lines = ["⚡️ <b>Service status</b>", ""]
+    for svc in SERVICES:
+        try:
+            result = subprocess.run(
+                ["systemctl", "--user", "show", svc,
+                 "-p", "ActiveState,SubState,NRestarts,ActiveEnterTimestamp"],
+                capture_output=True, text=True, timeout=5, check=True,
+            )
+            props = dict(line.split("=", 1) for line in result.stdout.strip().splitlines() if "=" in line)
+            active, sub = props.get("ActiveState", "?"), props.get("SubState", "?")
+            restarts = props.get("NRestarts", "?")
+            since = props.get("ActiveEnterTimestamp", "?") or "?"
+            emoji = "🟢" if active == "active" and sub == "running" else "🔴"
+            restart_note = "" if restarts in ("0", "?") else f" ⚠️ {restarts} restarts"
+            rows = [
+                ("State", f"{active}/{sub}"),
+                ("Restarts", f"{restarts}{restart_note}"),
+                ("Since", since),
+            ]
+            lines.append(f"{emoji} <b>{svc}</b>\n{tg.row_block(rows)}")
+        except Exception as exc:  # noqa: BLE001 - one bad service query must not blank the whole reply
+            lines.append(f"⚠️ <b>{svc}</b>\n{tg.row_block([('Error', str(exc))])}")
+    return "\n\n".join(lines)
+
+
 COMMANDS = [
     ("positions", "Show each open signal"),
     ("report", "Win/loss trades, PnL, and current balance"),
-    ("weekendscalper", "Weekend Hunter test track (own wallet)"),
+    ("weekendhunter", "Weekend Hunter test track (own wallet)"),
     ("pending", "Signals waiting on entry confirmation"),
     ("statistics", "Win rate broken down by confidence bucket"),
+    ("status", "systemd status of this deployment's own services"),
 ]
 
 
@@ -262,12 +314,14 @@ def main() -> None:
                     notifier.send(handle_positions())
                 elif text in ("/report", tg.BUTTON_REPORT):
                     notifier.send(handle_report())
-                elif text in ("/weekendscalper", tg.BUTTON_WEEKEND_SCALPER):
-                    notifier.send(handle_weekend_scalper())
+                elif text in ("/weekendhunter", tg.BUTTON_WEEKEND_HUNTER):
+                    notifier.send(handle_weekend_hunter())
                 elif text in ("/pending", tg.BUTTON_PENDING):
                     notifier.send(handle_pending())
                 elif text in ("/statistics", tg.BUTTON_STATISTICS):
                     notifier.send(handle_statistics())
+                elif text in ("/status", tg.BUTTON_STATUS):
+                    notifier.send(handle_status())
             except Exception as exc:  # noqa: BLE001 - must never crash the listener
                 print(f"[polar] failed to handle {text!r}: {exc}", flush=True)
 

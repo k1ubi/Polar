@@ -28,7 +28,7 @@ daemon Monday-Friday will correctly and silently produce nothing.
 | `strategy.py` | The ported signal logic: weekend gating, multi-timeframe trend confluence, CVD divergence, the weighted signal-strength composite, dynamic 5-20x leverage, ATR-based TP/SL, trailing-stop ratchet, liquidation-proximity check |
 | `positions.py` | Weekend Hunter's own $500 wallet (matching the Pine script's own `initial_capital` default) and risk gates (max concurrent positions, daily/weekend loss limits, consecutive-loss breaker, account emergency stop), built on `Core.Library.positions`'s generic store |
 | `daemon.py` | The live loop: polls BTCUSDT/ETHUSDT on the daily chart (plus separate 4h/1h fetches for confluence), opens/manages/closes paper positions, pushes Telegram alerts |
-| `telegram_bot.py` | The command listener: `/positions`, `/report`, `/weekendscalper`, `/pending`, `/statistics` |
+| `telegram_bot.py` | The command listener: `/positions`, `/report`, `/weekendhunter`, `/pending`, `/statistics`, `/status` |
 
 ## Two things that couldn't be translated 1:1
 
@@ -78,7 +78,7 @@ bot only listens.
 
 ## Verification
 
-`Core/weekend_hunter/tests/test_strategy.py` — 19 tests: weekend gating
+`Core/weekend_hunter/tests/test_strategy.py` — 20 tests: weekend gating
 (including the "must stay silent on a weekday" property), the CVD
 windowed-cumsum equivalence proof, leverage/level/trailing-stop formulas,
 position sizing, and every risk gate (available capital, max concurrent
@@ -88,7 +88,19 @@ into a real win, and the streak counter has to know that — and the account
 emergency stop).
 
 Also dry-run against live BTCUSDT/ETHUSDT data (both the daily execution
-chart and separate 4h/1h fetches) end-to-end with no exceptions.
+chart and separate 4h/1h fetches) end-to-end with no exceptions, and a
+real Telegram round-trip through the live systemd services.
+
+**Re-verified line-by-line against the actual Pine source** once Lorenzo
+pasted it directly (rather than only trusting the prior codebase's own
+port). Everything else matched exactly; one real bug was found and fixed:
+`realized_pnl_this_weekend()` was summing every closed trade since the
+most recent Saturday with no upper bound, so a position opened Saturday
+that didn't close until, say, Wednesday would incorrectly count toward
+the weekend loss limit. Pine's `weekend_pnl` only accumulates a trade's
+PnL when `is_weekend` is true *at the moment it closes*, and resets every
+Monday — a Wednesday close should never touch it. Fixed and covered by
+`test_weekend_pnl_excludes_weekday_closes_of_weekend_opened_positions`.
 
 ## Calibration status
 

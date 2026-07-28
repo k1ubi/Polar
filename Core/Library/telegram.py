@@ -17,19 +17,16 @@ import requests
 
 BUTTON_POSITIONS = "📊 Positions"
 BUTTON_REPORT = "📈 Report"
-BUTTON_WEEKEND_SCALPER = "🎯 Weekend Scalper"
+BUTTON_WEEKEND_HUNTER = "🎯 Weekend Hunter"
 BUTTON_PENDING = "⏳ Pending Trades"
 BUTTON_STATISTICS = "📐 Statistics"
+BUTTON_STATUS = "⚡️ Status"  # systemd --user status of this deployment's own services
 
-# No Status button here (unlike the prior codebase) — that command queried
-# systemd services on a specific Pi deployment, which doesn't apply to
-# wherever this bot actually runs. Add a Core-appropriate equivalent later
-# if this bot ends up with its own fixed deployment target.
 PERSISTENT_KEYBOARD = {
     "keyboard": [
         [{"text": BUTTON_POSITIONS}, {"text": BUTTON_REPORT}],
-        [{"text": BUTTON_WEEKEND_SCALPER}, {"text": BUTTON_PENDING}],
-        [{"text": BUTTON_STATISTICS}],
+        [{"text": BUTTON_WEEKEND_HUNTER}, {"text": BUTTON_PENDING}],
+        [{"text": BUTTON_STATISTICS}, {"text": BUTTON_STATUS}],
     ],
     "resize_keyboard": True,
 }

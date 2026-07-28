@@ -240,3 +240,23 @@ def test_account_emergency_stop_trips_below_70_percent_equity():
     store.add(_open_position(status="sl", pnl=big_loss, closed_at=now.isoformat()))
     assert store.account_emergency_stop() is True
     assert store.risk_gate_blocked("BTCUSDT") is not None
+
+
+def test_weekend_pnl_excludes_weekday_closes_of_weekend_opened_positions():
+    """Pine's weekend_pnl only accumulates a trade's PnL when `is_weekend`
+    is true AT CLOSE TIME, and resets every Monday -- a position opened
+    Saturday that doesn't close until Wednesday must NOT count toward
+    weekend_pnl, even though it originated over the weekend."""
+    # find last Saturday and the Wednesday that follows it, both at noon UTC
+    today = datetime.now(timezone.utc)
+    days_since_saturday = (today.weekday() - 5) % 7
+    saturday_noon = (today - timedelta(days=days_since_saturday)).replace(hour=12, minute=0, second=0, microsecond=0)
+    wednesday_noon = saturday_noon + timedelta(days=4)  # Sat -> Wed
+
+    store.add(_open_position(pnl=10.0, status="tp", closed_at=saturday_noon.isoformat()))
+    store.add(_open_position(pnl=-7.0, status="sl", closed_at=wednesday_noon.isoformat()))
+
+    weekend_total = store.realized_pnl_this_weekend()
+    assert weekend_total == pytest.approx(10.0), (
+        f"expected only the Saturday close (+10.0) to count, got {weekend_total}"
+    )
