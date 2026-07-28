@@ -29,14 +29,14 @@ class Position:
     direction: str  # "bullish" | "bearish"
     confidence: float
     entry: float
-    tp: float
+    tp: float | None  # None for a Core with no target-price formula (e.g. VPA — see Doc/Core/vpa.md)
     sl: float
     leverage: int
     margin_usdt: float
     message_id: int | None
     chat_id: str | None
     opened_at: str  # ISO 8601
-    status: str = "open"  # "open" | "tp" | "sl"
+    status: str = "open"  # "open" | "tp" | "sl" | "time" (see Core-specific docs for what each Core actually emits)
     closed_at: str | None = None
     exit_price: float | None = None
     pnl_usdt: float | None = None
@@ -47,6 +47,11 @@ class Position:
     # (how far into profit a trade is, in units of its own original risk)
     # can still be computed after sl has moved.
     original_sl: float | None = None
+    # ISO 8601 -- for a Core whose exit rule includes a holding-period
+    # expectation rather than (or in addition to) TP/SL. VPA's Ch11
+    # cause-effect duration (a congestion zone's size sets how long to
+    # expect the subsequent move to run) is the first user of this.
+    expires_at: str | None = None
 
 
 def _load_raw(path: Path) -> list[dict]:

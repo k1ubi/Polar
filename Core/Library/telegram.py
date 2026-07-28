@@ -18,6 +18,7 @@ import requests
 BUTTON_POSITIONS = "📊 Positions"
 BUTTON_REPORT = "📈 Report"
 BUTTON_WEEKEND_HUNTER = "🎯 Weekend Hunter"
+BUTTON_VPA = "📊 VPA"
 BUTTON_PENDING = "⏳ Pending Trades"
 BUTTON_STATISTICS = "📐 Statistics"
 BUTTON_STATUS = "⚡️ Status"  # systemd --user status of this deployment's own services
@@ -25,8 +26,9 @@ BUTTON_STATUS = "⚡️ Status"  # systemd --user status of this deployment's ow
 PERSISTENT_KEYBOARD = {
     "keyboard": [
         [{"text": BUTTON_POSITIONS}, {"text": BUTTON_REPORT}],
-        [{"text": BUTTON_WEEKEND_HUNTER}, {"text": BUTTON_PENDING}],
-        [{"text": BUTTON_STATISTICS}, {"text": BUTTON_STATUS}],
+        [{"text": BUTTON_WEEKEND_HUNTER}, {"text": BUTTON_VPA}],
+        [{"text": BUTTON_PENDING}, {"text": BUTTON_STATISTICS}],
+        [{"text": BUTTON_STATUS}],
     ],
     "resize_keyboard": True,
 }

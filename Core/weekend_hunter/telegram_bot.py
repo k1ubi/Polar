@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Telegram command listener — answers /positions, /report, /weekendhunter,
-/pending, /statistics (and the matching persistent keyboard buttons).
+/vpa, /pending, /statistics (and the matching persistent keyboard buttons).
 
 Separate process from daemon.py: the daemon only ever PUSHES alerts, it
 never listens; this script is the other direction (Telegram -> Polar),
@@ -9,21 +9,24 @@ experience.
 
     python3 -m Core.weekend_hunter.telegram_bot
 
-Read-only against Core.weekend_hunter.positions' store — never places an
-order, never touches the strategy.
+Read-only against both Cores' stores (Core.weekend_hunter.positions and
+Core.vpa.positions) — never places an order, never touches either
+strategy. Lives under Core/weekend_hunter/ for historical reasons (it was
+built before VPA had a live daemon) rather than a neutral location — moving
+it is a bigger, undocumented restructuring this change doesn't need to make.
 
-NOTE on /positions and /report vs /weekendhunter: Weekend Hunter is
-currently the only live Core in this project, so all three read the exact
-same store today (fed by Core.weekend_hunter.positions). /positions and
-/report are the general-purpose commands, meant to become a combined view
-once a second Core goes live and pushes into its own store; /weekendhunter
-is the strategy-specific view and will keep showing Weekend Hunter only,
-even then. No design decision is being deferred by this overlap — there is
-just nothing else to combine yet.
+NOTE on /positions and /report vs /weekendhunter and /vpa: /positions and
+/report are the general-purpose, COMBINED commands (both Cores' open
+positions and closed-trade stats together, since only one Telegram bot
+process exists for both); /weekendhunter and /vpa are the strategy-specific
+views, each showing only its own Core's store. This is exactly what this
+module's own prior docstring anticipated before VPA went live: "meant to
+become a combined view once a second Core goes live and pushes into its
+own store."
 
-/status queries `systemctl --user` for this deployment's own two
-services (polar-weekend-hunter, polar-weekend-hunter-bot -- see the unit
-files under ~/.config/systemd/user/), not a generic Pi-wide service list.
+/status queries `systemctl --user` for this deployment's own services
+(see the unit files under ~/.config/systemd/user/), not a generic Pi-wide
+service list.
 """
 from __future__ import annotations
 
@@ -38,6 +41,7 @@ load_dotenv()
 
 from Core.Library import telegram as tg
 from Core.Library.candlestick_trend.backtest import fetch_ohlcv
+from Core.vpa import positions as vpa_store
 from Core.weekend_hunter import positions as store
 
 # This deployment's own systemd --user services (see the unit files under
@@ -45,7 +49,9 @@ from Core.weekend_hunter import positions as store
 # rather than reading anything Polar itself wrote, so a service that's
 # hung or crash-looping still shows up accurately (a daemon can't
 # self-report that it's stuck).
-SERVICES = ["polar-weekend-hunter", "polar-weekend-hunter-bot"]
+SERVICES = ["polar-weekend-hunter", "polar-weekend-hunter-bot", "polar-vpa"]
+
+VPA_PENDING_PATH = Path(__file__).resolve().parent.parent / "vpa" / "data" / "pending.json"
 
 OFFSET_PATH = Path(__file__).resolve().parent / "data" / "telegram_bot_offset.json"
 MAX_POSITIONS_SHOWN = 15  # Telegram messages cap at 4096 chars
@@ -78,6 +84,16 @@ def _unrealized_row(position) -> tuple[str, str] | None:
         return None
 
 
+def _tp_sl_row(p) -> tuple[str, str]:
+    """VPA positions carry no fixed target (see Doc/Core/vpa.md — the book
+    gives no target-price formula, only a market-derived stop and a
+    cause/effect holding-period expectation), so `tp` is None there."""
+    if p.tp is None:
+        expiry = f", exit by {tg.fmt_time(p.expires_at)}" if p.expires_at else ""
+        return ("Stop", f"{tg.fmt_price(p.sl)} (no fixed target{expiry})")
+    return ("TP / SL", f"{tg.fmt_price(p.tp)} / {tg.fmt_price(p.sl)}")
+
+
 def _position_block(p) -> str:
     side = "LONG" if p.direction == "bullish" else "SHORT"
     rows = [
@@ -85,7 +101,7 @@ def _position_block(p) -> str:
         ("Confidence", f"{p.confidence:.0%}"),
         ("Market", f"{p.platform}, {p.timeframe}"),
         ("Entry", tg.fmt_price(p.entry)),
-        ("TP / SL", f"{tg.fmt_price(p.tp)} / {tg.fmt_price(p.sl)}"),
+        _tp_sl_row(p),
         ("Margin", f"{p.margin_usdt:.2f} USDT ({p.leverage}x)"),
     ]
     unrealized = _unrealized_row(p)
@@ -110,10 +126,11 @@ def _closed_block(p) -> str:
 
 
 def handle_positions() -> str:
-    open_positions = store.open_positions()
+    open_positions = store.open_positions() + vpa_store.open_positions()
     if not open_positions:
         return "No open positions right now."
 
+    open_positions.sort(key=lambda p: p.opened_at, reverse=True)
     shown = open_positions[:MAX_POSITIONS_SHOWN]
     total_unrealized = 0.0
     for p in shown:
@@ -121,7 +138,7 @@ def handle_positions() -> str:
         if row:
             total_unrealized += float(row[1].split()[1])
 
-    lines = [f"<b>{len(open_positions)} open position(s)</b>"]
+    lines = [f"<b>{len(open_positions)} open position(s)</b> (Weekend Hunter + VPA)"]
     if len(open_positions) > MAX_POSITIONS_SHOWN:
         lines.append(f"(showing the first {MAX_POSITIONS_SHOWN}, use /report for the full summary)")
     lines.append(f"Unrealized PnL: {total_unrealized:+.2f} USDT")
@@ -131,21 +148,30 @@ def handle_positions() -> str:
 
 
 def handle_report() -> str:
-    closed = store.closed_positions()
+    """Combined win/loss/PnL across both Cores. Each Core keeps its own
+    wallet (Weekend Hunter's $500 matches its Pine source; VPA's $200 is
+    this project's usual convention — see each Core's own positions.py), so
+    balances are shown per-Core rather than summed into one number that
+    would silently conflate two different starting capitals."""
+    wh_closed = store.closed_positions()
+    vpa_closed = vpa_store.closed_positions()
+    closed = wh_closed + vpa_closed
     wins = [p for p in closed if (p.pnl_usdt or 0.0) >= 0]
     losses = [p for p in closed if (p.pnl_usdt or 0.0) < 0]
     realized_pnl = sum(p.pnl_usdt or 0.0 for p in closed)
-    balance = store.WALLET_USDT + realized_pnl
     win_rate = len(wins) / len(closed) * 100 if closed else 0.0
 
     lines = [
         "<b>Polar report</b>",
         "",
         f"Closed trades: {len(closed)} ({len(wins)}W / {len(losses)}L, {win_rate:.1f}% win rate)",
-        f"Open positions: {len(store.open_positions())}",
-        f"Realized PnL: {realized_pnl:+.2f} USDT",
-        f"Starting wallet: {store.WALLET_USDT:.2f} USDT",
-        f"Current balance: <b>{balance:.2f} USDT</b>",
+        f"Open positions: {len(store.open_positions()) + len(vpa_store.open_positions())}",
+        f"Realized PnL (combined): {realized_pnl:+.2f} USDT",
+        "",
+        f"Weekend Hunter balance: <b>{store.WALLET_USDT + store.total_realized_pnl():.2f} USDT</b> "
+        f"(started {store.WALLET_USDT:.0f})",
+        f"VPA balance: <b>{vpa_store.WALLET_USDT + vpa_store.total_realized_pnl():.2f} USDT</b> "
+        f"(started {vpa_store.WALLET_USDT:.0f})",
     ]
     if closed:
         lines += ["", "<i>Last 5 closed:</i>"]
@@ -184,27 +210,66 @@ def handle_weekend_hunter() -> str:
     return "\n".join(lines)
 
 
+def handle_vpa() -> str:
+    """Dedicated VPA view — analogous to /weekendhunter. VPA's own wallet,
+    own positions, no fixed take-profit (see `_tp_sl_row` — the book gives
+    no target-price formula, only a market-derived stop and a cause/effect
+    holding-period expectation)."""
+    open_pos = vpa_store.open_positions()
+    closed = vpa_store.closed_positions()
+    wins = [p for p in closed if (p.pnl_usdt or 0.0) >= 0]
+    losses = [p for p in closed if (p.pnl_usdt or 0.0) < 0]
+    realized_pnl = vpa_store.total_realized_pnl()
+    balance = vpa_store.WALLET_USDT + realized_pnl
+    win_rate = len(wins) / len(closed) * 100 if closed else 0.0
+
+    lines = [
+        "📊 <b>VPA report</b> (Coulling's Volume Price Analysis, multi-timeframe)",
+        "",
+        f"Closed trades: {len(closed)} ({len(wins)}W / {len(losses)}L, {win_rate:.1f}% win rate)",
+        f"Open positions: {len(open_pos)}",
+        f"Realized PnL: {realized_pnl:+.2f} USDT",
+        f"Starting wallet: {vpa_store.WALLET_USDT:.2f} USDT",
+        f"Current balance: <b>{balance:.2f} USDT</b>",
+    ]
+    if open_pos:
+        lines += ["", "<i>Open:</i>"]
+        lines.append("\n\n".join(_position_block(p) for p in open_pos))
+    if closed:
+        lines += ["", "<i>Last 5 closed:</i>"]
+        recent = sorted(closed, key=lambda p: p.closed_at or "", reverse=True)[:5]
+        lines.append("\n\n".join(_closed_block(p) for p in recent))
+    return "\n".join(lines)
+
+
 def handle_pending() -> str:
     """Pending trades are VPA's, not Weekend Hunter's -- Weekend Hunter
-    enters directly on signal, nothing ever stages there. VPA's own
-    `analyse()`/`build_setups()` (Core/vpa/analysis.py) can identify a
-    setup that hasn't fully confirmed yet -- e.g. a breakout waiting on a
-    low-volume retest (Ch7's "test of supply/demand" before it resolves
-    pass/fail) -- which is exactly the "pending" concept this command is
-    for.
+    enters directly on signal, nothing ever stages there. A pending entry
+    here is the final middle-timeframe (1H) bar's read: it has a
+    qualifying bias/conviction but, being the last bar, has no next bar yet
+    to confirm it (Ch11 Principle No 2 -- never act on the signal bar
+    itself). Written by Core/vpa/daemon.py's `_update_pending` every scan
+    cycle; this command just reads that file."""
+    if not VPA_PENDING_PATH.exists():
+        return "No pending trades right now."
+    pending = json.loads(VPA_PENDING_PATH.read_text())
+    if not pending:
+        return "No pending trades right now."
 
-    VPA has no live daemon feeding this bot yet (it only runs against
-    historical data today, see Doc/Core/vpa.md), so there is nothing to
-    show here until that exists -- this is an honest "not built yet," not
-    "nothing will ever be pending."
-    """
-    return (
-        "No pending trades right now.\n\n"
-        "Weekend Hunter enters directly on signal — nothing ever stages there. "
-        "Pending trades would come from VPA (e.g. a breakout waiting on a "
-        "low-volume retest before it's confirmed) once VPA has a live daemon "
-        "feeding this bot — that doesn't exist yet."
-    )
+    lines = [f"⏳ <b>{len(pending)} pending VPA read(s)</b>", "<i>Awaiting next-bar confirmation</i>", ""]
+    for symbol, info in pending.items():
+        emoji = "🟢" if info["bias"] == "bullish" else "🔴"
+        rows = [
+            ("Bias", info["bias"].upper()),
+            ("Conviction", f"{info['conviction']:.0%}"),
+            ("Timeframe", info["timeframe"]),
+            ("As of", tg.fmt_time(info["timestamp"])),
+        ]
+        block = f"{emoji} <b>{symbol}</b>\n{tg.row_block(rows)}"
+        if info.get("rationale"):
+            block += f"\n<i>{'; '.join(info['rationale'])}</i>"
+        lines.append(block)
+    return "\n\n".join(lines)
 
 
 def handle_statistics() -> str:
@@ -212,7 +277,7 @@ def handle_statistics() -> str:
     (50-59%, 60-69%, ...) rather than finer ones — sample sizes here are
     still small, and narrower buckets would mostly produce n=1 buckets that
     look like "0% or 100% win rate" without saying so honestly."""
-    closed = store.closed_positions()
+    closed = store.closed_positions() + vpa_store.closed_positions()
     if not closed:
         return "No closed trades yet -- nothing to break down by confidence."
 
@@ -271,9 +336,10 @@ def handle_status() -> str:
 
 
 COMMANDS = [
-    ("positions", "Show each open signal"),
-    ("report", "Win/loss trades, PnL, and current balance"),
+    ("positions", "Show each open signal (both Cores)"),
+    ("report", "Win/loss trades, PnL, and balances (both Cores)"),
     ("weekendhunter", "Weekend Hunter test track (own wallet)"),
+    ("vpa", "VPA test track (own wallet)"),
     ("pending", "Signals waiting on entry confirmation"),
     ("statistics", "Win rate broken down by confidence bucket"),
     ("status", "systemd status of this deployment's own services"),
@@ -322,6 +388,8 @@ def main() -> None:
                     notifier.send(handle_report(), reply_markup=tg.PERSISTENT_KEYBOARD)
                 elif text in ("/weekendhunter", tg.BUTTON_WEEKEND_HUNTER):
                     notifier.send(handle_weekend_hunter(), reply_markup=tg.PERSISTENT_KEYBOARD)
+                elif text in ("/vpa", tg.BUTTON_VPA):
+                    notifier.send(handle_vpa(), reply_markup=tg.PERSISTENT_KEYBOARD)
                 elif text in ("/pending", tg.BUTTON_PENDING):
                     notifier.send(handle_pending(), reply_markup=tg.PERSISTENT_KEYBOARD)
                 elif text in ("/statistics", tg.BUTTON_STATISTICS):

@@ -22,6 +22,8 @@ there is an anomaly with the price... Validation or anomaly. Nothing else."*
 | `signals.py` | Ch4–Ch7 | The signal catalogue — 20+ detectors across 5 tiers |
 | `vap.py` | Ch9 | Volume-at-price histogram, high/low volume nodes, time-normalised intensity |
 | `analysis.py` | Ch10, Ch11 | The integrated read, setup construction, the three-timeframe frame |
+| `positions.py` | — | VPA's own $200 wallet (this project's usual convention — the book gives no capital figure) and risk gates, on `Core.Library.positions`'s generic store |
+| `daemon.py` | — | The live loop: scans a market-cap-filtered universe on the 15M/1H/4H frame, opens/manages/closes paper positions, pushes Telegram alerts |
 
 ## The signal catalogue
 
@@ -105,6 +107,68 @@ test requires a prior congestion phase, and a climax requires repetition.
   bar). `require_confirmation=False` is Ch10's "aggressive" fork, which the
   book presents honestly as roughly break-even.
 
+## Going live — the daemon (`daemon.py`)
+
+**Universe**: every Bitget USDT spot pair with a CoinGecko market cap above
+$50M, excluding meme/joke coins and stablecoin/gold-pegged tokens — Lorenzo's
+own instruction ("The Core must operate on >10mln market cap crypto pairs",
+later revised to ">50mln, avoid meme coins/meme token"), not a book
+requirement (Coulling's method is instrument-agnostic; the universe
+constraint is this project's own risk preference). Implemented via
+`Core.Library.candlestick_trend.backtest.top_n_crypto_usdt_pairs(n=None,
+min_market_cap=50_000_000, exclude_meme_coins=True)` — see
+Doc/Library/shared_infrastructure.md for the exclusion mechanics. This is
+CoinGecko-rate-limited and slow (minutes), so it's cached to disk
+(`data/universe_cache.json`) and refreshed once a day, not every poll.
+
+**Timeframes**: `analyse_multi_timeframe`'s own design is used directly —
+only the FAST chart (15M) is fetched from the exchange; 1H (middle,
+"my primary trading chart") and 4H (slow, sets the bias) are resampled from
+it internally, so all three frames stay perfectly aligned rather than
+drifting from three independent fetches. Setups are on the 1H chart, as
+`build_setups()` already resolves.
+
+**Exit rule — no invented take-profit.** A position closes on whichever
+comes first:
+1. **Stop hit** — `VpaSetup.stop_price`, the book's own market-derived level.
+2. **Cause/effect duration expires** — Ch11's `expected_bars` (a congestion
+   zone's size setting how long to expect the move to run) is a HOLDING
+   PERIOD expectation, not a price target (the doc already says so:
+   "Multi-timeframe modulates risk and holding period only"). Using it as a
+   timed exit is the direct, non-invented reading of that number, not a
+   fabricated formula. `Position.expires_at` (a new, Core-agnostic field on
+   the shared store — see `Core.Library.positions`) holds this deadline;
+   `daemon.py`'s `check_open_positions` closes at market on expiry.
+
+No fixed TP is ever set (`Position.tp = None` for every VPA position) —
+inventing one the book doesn't supply would be worse than being honest that
+there isn't one. `Core/weekend_hunter/telegram_bot.py`'s `_tp_sl_row` renders
+this case explicitly ("no fixed target") rather than showing a fabricated
+number.
+
+**Sizing**: risk-based, not fixed-dollar (unlike Weekend Hunter, which
+matches its Pine source's absolute-dollar sizing). `VpaSetup.risk_fraction`
+is exactly the input the book leaves for a position sizer to use ("you will
+have to judge the risk on the trade") — `positions.position_size_usd()`
+risks a fixed 2% of the $200 wallet per trade via that fraction, capped at
+50% of available capital so a very tight stop can't imply an absurd size.
+No leverage (1x always) — the book never discusses leveraged trading.
+
+**Scan cost**: `isolated_pivots`/`congestion_zones` are per-bar Python loops,
+not vectorised, so a full multi-timeframe read costs ~4s/symbol measured on
+real hardware — threading barely helps (GIL-bound), so the daemon uses a
+process pool (`SCAN_WORKERS = min(4, os.cpu_count())`) to keep a ~190-pair
+scan well under the 15-minute poll interval.
+
+**Telegram**: `Core/weekend_hunter/telegram_bot.py` (kept in place rather
+than moved — it already anticipated this exact extension in its own prior
+docstring) now reads both Cores' stores. `/positions` and `/report` are
+combined views; `/vpa` is the VPA-only view (mirroring `/weekendhunter`);
+`/pending` reads `Core/vpa/data/pending.json`, written every scan cycle —
+a "pending" entry is the final middle-timeframe bar's own read: it has a
+qualifying bias/conviction but, being the last bar, has no next bar yet to
+confirm it (Principle No 2 — never act on the signal bar itself).
+
 ## Verification
 
 `Core/vpa/tests/test_vpa.py` — 29 tests. The load-bearing one is
@@ -114,6 +178,21 @@ bars exercised) and verified to actually detect violations (perturbing a
 future bar changes zero past reads). This project has already shipped one
 look-ahead bug — the forming-bar leak — so causality is checked
 mechanically, not by inspection.
+
+`Core/vpa/tests/test_daemon.py` — 14 tests covering `positions.py`'s risk
+gates and sizing math, plus the pure scan-result helpers that decide what a
+live cycle acts on: `_latest_setup` (only the just-closed bar's setup is
+actionable — an older one's entry price has already passed) and
+`_update_pending` (records/clears the final bar's own unconfirmed read).
+
+Also dry-run against live data: `top_n_crypto_usdt_pairs` benchmarked at
+~4s/symbol for a full 15M/1H/4H read (measured on real Bitget data), full
+`run_once()` exercised end-to-end against a small real-symbol sample with a
+fake notifier (no live Telegram sends) with zero exceptions, and the
+combined `/positions`/`/report`/`/vpa`/`/pending` Telegram handlers
+smoke-tested against isolated temp stores covering both a Weekend-Hunter-style
+position (fixed TP/SL) and a VPA one (no TP, `expires_at` set) rendering
+correctly side by side.
 
 ## Calibration status — read before trusting any number
 
@@ -153,12 +232,13 @@ a few extreme bars wreck a mean-based baseline.
   inference — *"if this were buying volume then the market would be rising
   fast; it isn't, so it must be selling volume"* — from an inference into a
   direct measurement. The single highest-value extension available.
-- **VAP profile is built over the whole frame** in `analyse()`, which is
-  correct for analysing completed history but means live use needs the
-  profile rebuilt on the visible prefix.
 - **Selectivity is high**: ~2 setups per 800 hourly bars on BTC at the
   default `min_conviction=0.35`. That is arguably right for a method whose
   own worked example is a single trade, but it is a tunable, not a law.
-- No position sizing. The book declines to give a formula (*"you will have
-  to judge the risk on the trade"*), so `VpaSetup` stops at expressing
-  `risk_fraction` rather than inventing one.
+  Confirmed live at daemon scale too (0 setups across a 10-symbol sample in
+  one scan cycle during dry-run verification) — not a bug, just the method's
+  own selectivity.
+- No target-price formula, only a market-derived stop and a cause/effect
+  holding-period expectation (the book declines to give one — *"you will
+  have to judge the risk on the trade"*). `daemon.py` treats this honestly
+  rather than inventing a TP: see "Going live" above.

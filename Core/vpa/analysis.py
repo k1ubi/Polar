@@ -196,10 +196,14 @@ def analyse(df: pd.DataFrame, volume_lookback: int = 100, vap_bins: int = 50) ->
     """Run the full VPA read across every bar of `df`.
 
     Strictly causal: bar i's read uses only bars <= i. The VAP profile is
-    the one place that needs care — it is built once over the whole frame
-    for speed, so `analyse` is for ANALYSIS and BACKTESTING of completed
-    history. For a live bar-by-bar read use `analyse_live`, which rebuilds
-    the profile on the visible prefix only.
+    the one place that needs care — it is built once over the whole `df`
+    passed in, so re-scoring an OLD bar i using a `df` that extends past i
+    would leak future information into that bar's read (a backtest
+    concern, scoring every historical bar in one pass). A live caller that
+    only ever fetches data up to "now" and only reads the LATEST bar's
+    result has no such window to leak from — `df` IS the visible prefix at
+    call time — so `Core/vpa/daemon.py` calls this directly rather than
+    needing a separate live variant.
     """
     contexts = build_contexts(df, volume_lookback=volume_lookback)
     profile = vap_mod.build_profile(df, bins=vap_bins)

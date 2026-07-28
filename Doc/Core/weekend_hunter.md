@@ -28,7 +28,7 @@ daemon Monday-Friday will correctly and silently produce nothing.
 | `strategy.py` | The ported signal logic: weekend gating, multi-timeframe trend confluence, CVD divergence, the weighted signal-strength composite, dynamic 5-20x leverage, ATR-based TP/SL, trailing-stop ratchet, liquidation-proximity check |
 | `positions.py` | Weekend Hunter's own $500 wallet (matching the Pine script's own `initial_capital` default) and risk gates (max concurrent positions, daily/weekend loss limits, consecutive-loss breaker, account emergency stop), built on `Core.Library.positions`'s generic store |
 | `daemon.py` | The live loop: polls the creator's 9 tradeable pairs (of their 10 pre-configured) on the 15M execution timeframe, with separate 4h/1h fetches for confluence, opens/manages/closes paper positions, pushes Telegram alerts |
-| `telegram_bot.py` | The command listener: `/positions`, `/report`, `/weekendhunter`, `/pending`, `/statistics`, `/status` |
+| `telegram_bot.py` | The command listener, shared with VPA now that it's live too (kept here since it already anticipated this extension — see Doc/Core/vpa.md's "Going live" section): `/positions`, `/report` (combined, both Cores), `/weekendhunter`, `/vpa`, `/pending`, `/statistics`, `/status` |
 
 ## Trading universe and execution timeframe — the creator's own spec
 
