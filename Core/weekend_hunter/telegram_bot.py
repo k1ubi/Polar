@@ -42,6 +42,7 @@ load_dotenv()
 from Core.Library import telegram as tg
 from Core.Library.candlestick_trend.backtest import fetch_ohlcv
 from Core.vpa import positions as vpa_store
+from Core.weekend_hunter import execution
 from Core.weekend_hunter import positions as store
 
 # This deployment's own systemd --user services (see the unit files under
@@ -94,7 +95,72 @@ def _tp_sl_row(p) -> tuple[str, str]:
     return ("TP / SL", f"{tg.fmt_price(p.tp)} / {tg.fmt_price(p.sl)}")
 
 
-def _position_block(p) -> str:
+def _money_tag(p) -> str:
+    """Real money or not, per position.
+
+    `exchange_order_id` is written only after a venue confirms a fill, so it
+    is the one unambiguous test — see Core/Library/positions.py. Without
+    this, a combined list shows VPA's paper positions and Weekend Hunter's
+    live ones in the same format, and nothing on screen says which of them
+    can actually lose you money.
+    """
+    return "💵 REAL" if p.exchange_order_id else "📝 paper"
+
+
+def live_view() -> bool:
+    """Whether the bot is showing the REAL book or the paper book.
+
+    The rule: while live trading is enabled, this bot reports only real
+    positions; while it is disabled, only paper ones. Mixing the two in one
+    list is what made four VPA paper positions read as live exposure.
+    """
+    return execution.trading_mode() == execution.MODE_LIVE
+
+
+def in_view(position) -> bool:
+    """Does this position belong in the current view?
+
+    `exchange_order_id` is set only after a venue confirms a fill, so it is
+    the authoritative real-vs-paper test (see Core/Library/positions.py).
+    """
+    return bool(position.exchange_order_id) is live_view()
+
+
+def _visible(positions: list) -> list:
+    return [p for p in positions if in_view(p)]
+
+
+def _hidden_real_warning() -> str | None:
+    """Real positions exist but the view is paper — say so.
+
+    Filtering is a display preference; open exposure at the venue is not.
+    Silently hiding a real position because someone flipped
+    POLAR_LIVE_TRADING to off would be the one filter outcome that could
+    actually cost money, so this is deliberately exempt from the rule.
+    """
+    if live_view():
+        return None
+    stranded = [p for p in store.open_positions() + vpa_store.open_positions()
+                if p.exchange_order_id]
+    if not stranded:
+        return None
+    exposure = sum(p.margin_usdt * p.leverage for p in stranded)
+    return (f"⚠️ <b>{len(stranded)} REAL position(s) still open at the venue</b> "
+            f"({exposure:.2f} USDT exposure), hidden by the paper view. "
+            f"Re-enable live trading to see them, or run <code>--flatten</code>.")
+
+
+def _real_open_count() -> int:
+    return sum(1 for p in store.open_positions() + vpa_store.open_positions()
+               if p.exchange_order_id)
+
+
+def _paper_open_count() -> int:
+    return sum(1 for p in store.open_positions() + vpa_store.open_positions()
+               if not p.exchange_order_id)
+
+
+def _position_block(p, core: str | None = None) -> str:
     side = "LONG" if p.direction == "bullish" else "SHORT"
     rows = [
         ("Pattern", p.pattern),
@@ -104,11 +170,18 @@ def _position_block(p) -> str:
         _tp_sl_row(p),
         ("Margin", f"{p.margin_usdt:.2f} USDT ({p.leverage}x)"),
     ]
+    if p.exchange_order_id:
+        # Exposure is what is actually at risk; margin alone understates a
+        # leveraged position by up to 20x.
+        rows.append(("Exposure", f"{p.margin_usdt * p.leverage:.2f} USDT"))
+        rows.append(("Order", str(p.exchange_order_id)))
     unrealized = _unrealized_row(p)
     if unrealized:
         rows.append(unrealized)
     rows.append(("Opened", tg.fmt_time(p.opened_at)))
-    return f"{'🟢' if p.direction == 'bullish' else '🔴'} <b>{p.symbol}</b> {side}\n{tg.row_block(rows)}"
+    label = f" · {core}" if core else ""
+    return (f"{'🟢' if p.direction == 'bullish' else '🔴'} <b>{p.symbol}</b> {side}"
+            f"{label} · {_money_tag(p)}\n{tg.row_block(rows)}")
 
 
 def _closed_block(p) -> str:
@@ -122,28 +195,72 @@ def _closed_block(p) -> str:
         ("Status", p.status.upper()),
         ("Closed", tg.fmt_time(p.closed_at)),
     ]
-    return f"{mark} <b>{p.symbol}</b>\n{tg.row_block(rows)}"
+    return f"{mark} <b>{p.symbol}</b> · {_money_tag(p)}\n{tg.row_block(rows)}"
+
+
+def _wh_balance() -> tuple[float, float, str]:
+    """(starting capital, current balance, label) for Weekend Hunter.
+
+    Once live, `WALLET_USDT` is the wrong number to show: it is the Pine
+    script's 500 paper constant, and reporting it against a real 163 USDT
+    account overstates the balance by 3x. Live, starting capital is the
+    frozen baseline and the current balance is the venue's real equity
+    (including unrealized PnL on open positions).
+
+    Never raises. This is a read-only reporting bot — an unreachable venue
+    must degrade to the local figures, not blank the whole reply.
+    """
+    starting = store.initial_capital_usdt()
+    if execution.trading_mode() == execution.MODE_LIVE:
+        try:
+            return starting, execution.get_broker().account_equity_usdt(), "live"
+        except Exception:  # noqa: BLE001 - see docstring
+            return starting, starting + store.total_realized_pnl(), "live (venue unreachable)"
+    return starting, starting + store.total_realized_pnl(), "paper"
+
+
+def _mode_banner() -> str:
+    """One unmistakable line about whether real money is at stake."""
+    mode = execution.trading_mode()
+    if mode == execution.MODE_LIVE:
+        return "🔴 <b>LIVE</b> — real orders on Bitget USDT-M" + (
+            " · ⛔ <b>HALTED</b>" if execution.halted() else ""
+        )
+    if mode == execution.MODE_DRY_RUN:
+        return "🟡 <b>DRY-RUN</b> — sizing computed, no orders sent"
+    return "🟢 <b>SIGNAL ONLY</b> — no orders placed"
 
 
 def handle_positions() -> str:
-    open_positions = store.open_positions() + vpa_store.open_positions()
-    if not open_positions:
-        return "No open positions right now."
+    tagged = ([(p, "Weekend Hunter") for p in _visible(store.open_positions())]
+              + [(p, "VPA") for p in _visible(vpa_store.open_positions())])
+    book = "real" if live_view() else "paper"
 
-    open_positions.sort(key=lambda p: p.opened_at, reverse=True)
-    shown = open_positions[:MAX_POSITIONS_SHOWN]
+    header = [_mode_banner()]
+    warning = _hidden_real_warning()
+    if warning:
+        header += ["", warning]
+
+    if not tagged:
+        return "\n".join(header + ["", f"No open {book} positions right now."])
+
+    tagged.sort(key=lambda t: t[0].opened_at, reverse=True)
+    shown = tagged[:MAX_POSITIONS_SHOWN]
     total_unrealized = 0.0
-    for p in shown:
+    for p, _ in shown:
         row = _unrealized_row(p)
         if row:
             total_unrealized += float(row[1].split()[1])
 
-    lines = [f"<b>{len(open_positions)} open position(s)</b> (Weekend Hunter + VPA)"]
-    if len(open_positions) > MAX_POSITIONS_SHOWN:
+    lines = [f"<b>{len(tagged)} open {book} position(s)</b>"] + header + [""]
+    if live_view():
+        exposure = sum(p.margin_usdt * p.leverage for p, _ in tagged)
+        lines.append(f"Exposure: <b>{exposure:.2f} USDT</b>")
+    if len(tagged) > MAX_POSITIONS_SHOWN:
         lines.append(f"(showing the first {MAX_POSITIONS_SHOWN}, use /report for the full summary)")
     lines.append(f"Unrealized PnL: {total_unrealized:+.2f} USDT")
     lines.append("")
-    lines.extend(_position_block(p) for p in shown)
+    lines.extend(_position_block(p, core) for p, core in shown)
     return "\n\n".join(lines)
 
 
@@ -153,25 +270,28 @@ def handle_report() -> str:
     this project's usual convention — see each Core's own positions.py), so
     balances are shown per-Core rather than summed into one number that
     would silently conflate two different starting capitals."""
-    wh_closed = store.closed_positions()
-    vpa_closed = vpa_store.closed_positions()
+    wh_closed = _visible(store.closed_positions())
+    vpa_closed = _visible(vpa_store.closed_positions())
     closed = wh_closed + vpa_closed
     wins = [p for p in closed if (p.pnl_usdt or 0.0) >= 0]
     losses = [p for p in closed if (p.pnl_usdt or 0.0) < 0]
     realized_pnl = sum(p.pnl_usdt or 0.0 for p in closed)
     win_rate = len(wins) / len(closed) * 100 if closed else 0.0
 
+    _wh_start, _wh_current, _wh_label = _wh_balance()
     lines = [
         "<b>Polar report</b>",
+        _mode_banner(),
         "",
         f"Closed trades: {len(closed)} ({len(wins)}W / {len(losses)}L, {win_rate:.1f}% win rate)",
-        f"Open positions: {len(store.open_positions()) + len(vpa_store.open_positions())}",
+        f"Open positions: {len(_visible(store.open_positions())) + len(_visible(vpa_store.open_positions()))}"
+        f" ({'real' if live_view() else 'paper'} book)",
         f"Realized PnL (combined): {realized_pnl:+.2f} USDT",
         "",
-        f"Weekend Hunter balance: <b>{store.WALLET_USDT + store.total_realized_pnl():.2f} USDT</b> "
-        f"(started {store.WALLET_USDT:.0f})",
+        f"Weekend Hunter balance: <b>{_wh_current:.2f} USDT</b> "
+        f"(started {_wh_start:.2f}, {_wh_label})",
         f"VPA balance: <b>{vpa_store.WALLET_USDT + vpa_store.total_realized_pnl():.2f} USDT</b> "
-        f"(started {vpa_store.WALLET_USDT:.0f})",
+        f"(started {vpa_store.WALLET_USDT:.0f}, paper)",
     ]
     if closed:
         lines += ["", "<i>Last 5 closed:</i>"]
@@ -183,22 +303,26 @@ def handle_report() -> str:
 def handle_weekend_hunter() -> str:
     """Dedicated Weekend Hunter view. See module docstring — identical data
     to /positions and /report for now, since it's the only live Core."""
-    open_pos = store.open_positions()
-    closed = store.closed_positions()
+    open_pos = _visible(store.open_positions())
+    closed = _visible(store.closed_positions())
     wins = [p for p in closed if (p.pnl_usdt or 0.0) >= 0]
     losses = [p for p in closed if (p.pnl_usdt or 0.0) < 0]
-    realized_pnl = store.total_realized_pnl()
-    balance = store.WALLET_USDT + realized_pnl
+    realized_pnl = sum(p.pnl_usdt or 0.0 for p in closed)
+    starting, balance, mode_label = _wh_balance()
     win_rate = len(wins) / len(closed) * 100 if closed else 0.0
 
     lines = [
         "🎯 <b>Weekend Hunter report</b> (Weekend Hunter faithful port)",
+        _mode_banner(),
+        *([w] if (w := _hidden_real_warning()) else []),
         "",
         f"Closed trades: {len(closed)} ({len(wins)}W / {len(losses)}L, {win_rate:.1f}% win rate)",
         f"Open positions: {len(open_pos)}",
         f"Realized PnL: {realized_pnl:+.2f} USDT",
-        f"Starting wallet: {store.WALLET_USDT:.2f} USDT",
+        f"Starting capital: {starting:.2f} USDT ({mode_label})",
         f"Current balance: <b>{balance:.2f} USDT</b>",
+        f"Position size: {120.0 * store.capital_scale():.2f} USDT margin "
+        f"(scaled x{store.capital_scale():.3f} from the Pine 500 base)",
     ]
     if open_pos:
         lines += ["", "<i>Open:</i>"]
@@ -215,11 +339,11 @@ def handle_vpa() -> str:
     own positions, no fixed take-profit (see `_tp_sl_row` — the book gives
     no target-price formula, only a market-derived stop and a cause/effect
     holding-period expectation)."""
-    open_pos = vpa_store.open_positions()
-    closed = vpa_store.closed_positions()
+    open_pos = _visible(vpa_store.open_positions())
+    closed = _visible(vpa_store.closed_positions())
     wins = [p for p in closed if (p.pnl_usdt or 0.0) >= 0]
     losses = [p for p in closed if (p.pnl_usdt or 0.0) < 0]
-    realized_pnl = vpa_store.total_realized_pnl()
+    realized_pnl = sum(p.pnl_usdt or 0.0 for p in closed)
     balance = vpa_store.WALLET_USDT + realized_pnl
     win_rate = len(wins) / len(closed) * 100 if closed else 0.0
 
@@ -277,7 +401,7 @@ def handle_statistics() -> str:
     (50-59%, 60-69%, ...) rather than finer ones — sample sizes here are
     still small, and narrower buckets would mostly produce n=1 buckets that
     look like "0% or 100% win rate" without saying so honestly."""
-    closed = store.closed_positions() + vpa_store.closed_positions()
+    closed = _visible(store.closed_positions() + vpa_store.closed_positions())
     if not closed:
         return "No closed trades yet -- nothing to break down by confidence."
 

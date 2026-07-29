@@ -193,8 +193,16 @@ def test_generate_signal_can_fire_on_a_weekend_with_a_clear_trend():
 @pytest.fixture(autouse=True)
 def _isolated_store(tmp_path, monkeypatch):
     """Every test gets its own empty JSON file -- these tests must never
-    touch the real data/positions.json."""
+    touch the real data/positions.json.
+
+    LIVE_BASELINE_PATH is isolated for the same reason: once live trading
+    has run, that file exists on this machine and holds the REAL account's
+    starting equity. Without this, every capital-gate assertion below would
+    silently start measuring against whatever the live account happens to
+    be worth instead of the 500 USDT paper constant they were written for.
+    """
     monkeypatch.setattr(store, "POSITIONS_PATH", tmp_path / "positions.json")
+    monkeypatch.setattr(store, "LIVE_BASELINE_PATH", tmp_path / "live_baseline.json")
     yield
 
 

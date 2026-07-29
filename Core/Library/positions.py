@@ -52,6 +52,22 @@ class Position:
     # cause-effect duration (a congestion zone's size sets how long to
     # expect the subsequent move to run) is the first user of this.
     expires_at: str | None = None
+    # --- real-order linkage (see Core/Library/broker.py) ---
+    # All None on a paper/signal-only position, which is what every
+    # position in an existing store is -- these default so old JSON files
+    # keep loading unchanged.
+    #
+    # exchange_order_id being set is the ONE test for "this position is
+    # backed by real money": it is written only after a venue confirms a
+    # fill, so a signal-only run can never be mistaken for a live one.
+    exchange_order_id: str | None = None
+    # The REAL average fill, which on a market order into a thin book can
+    # differ from `entry` (the price the signal was computed at). PnL and
+    # R-multiples on a live position must use this, not `entry`.
+    exchange_fill_price: float | None = None
+    # Filled quantity in base coin, as accepted by the venue after its own
+    # step/precision rounding -- not the size we asked for.
+    exchange_size_base: float | None = None
 
 
 def _load_raw(path: Path) -> list[dict]:

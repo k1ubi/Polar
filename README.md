@@ -63,6 +63,7 @@ $ tree -L 2
 |---|---|
 | `Core/` | Every strategy Polar has run, saved as its own subfolder. Exactly one drives live trading at a time. |
 | `Core/Library/` | Shared infrastructure other Cores depend on — never a strategy on its own. |
+| `Core/Library/broker.py` | Venue-agnostic order execution — swappable exchange, same as the swappable needle. |
 | `Doc/Infrastructure/` | Diagrams, tech stack, infrastructure documentation. |
 | `Doc/Core/` | Per-Core documentation — mechanism, strategy, pros/cons. |
 | `Doc/Library/` | Documentation for shared infrastructure. |
@@ -77,17 +78,40 @@ $ ls Core/
 Library/  vpa/  weekend_hunter/
 ```
 
-## `// 0x03` STATUS
+## `// 0x03` EXECUTION
+
+> Polar can place real orders on Bitget USDT-M futures. It does not, unless
+> told to.
+
+`POLAR_LIVE_TRADING` in `.env` gates everything: unset or unrecognized means
+signal-only (the default, and how every Core has run to date), `dry-run`
+logs real sizing without sending, `true` arms it. Stops and targets are
+attached at the exchange with the entry order — the 300s poll loop is a
+reconciler, not the thing standing between a position and a loss.
+
+```bash
+touch Core/weekend_hunter/data/HALT                  # stop opening
+python3 -m Core.weekend_hunter.execution --flatten   # close everything now
+python3 -m Core.weekend_hunter.execution --status    # mode, equity, halt state
+```
+
+Full detail, including the margin-vs-notional resolution and the failure
+matrix: [`Doc/Infrastructure/execution.md`](./Doc/Infrastructure/execution.md).
+
+## `// 0x04` STATUS
 
 | Field | Value |
 |---|---|
 | Repo phase | `LIVE` |
 | Active Core | `weekend_hunter` (daemon + telegram bot) |
+| Execution | `Bitget USDT-M futures` — built, tested, **not yet armed** |
+| Trades placed | `0` — weekend-gated, and no live order has ever been sent |
 | Cores built | `2` (`vpa`, `weekend_hunter`) + 1 shared library (`candlestick_trend`) |
-| Docs populated | `4` |
+| Docs populated | `5` |
 
-## `// 0x04` DOCS
+## `// 0x05` DOCS
 
+- [`Doc/Infrastructure/execution.md`](./Doc/Infrastructure/execution.md) — live order execution, kill switch, failure modes
 - [`Doc/Infrastructure/`](./Doc/Infrastructure) — infra diagrams, tech stack, infra docs
 - [`Doc/Core/`](./Doc/Core) — how each Core works, its strategy, pros/cons
 - [`Doc/Library/`](./Doc/Library) — shared infrastructure (candlestick_trend, positions, telegram, indicators)

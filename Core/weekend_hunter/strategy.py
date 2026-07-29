@@ -293,12 +293,21 @@ def generate_signal(
     )
 
 
-def position_size_usd(signal: WeekendHunterSignal, symbol: str) -> float:
+def position_size_usd(signal: WeekendHunterSignal, symbol: str, capital_scale: float = 1.0) -> float:
     """Pine: base_position_usd/desired_position_usd/pair_multiplier/
-    final_position_usd — absolute-dollar sizing, not wallet-percent."""
+    final_position_usd — absolute-dollar sizing, not wallet-percent.
+
+    `capital_scale` rescales the source's absolute dollars to the account
+    actually being traded (see positions.capital_scale()). It defaults to
+    1.0, so the paper track and every existing test see the unmodified Pine
+    figures; only a live account of a different size moves it.
+
+    The returned figure is MARGIN. Real exposure is this times
+    `signal.final_leverage` — see Doc/Infrastructure/execution.md.
+    """
     high_confidence = abs(signal.signal_strength) > HIGH_CONFIDENCE_THRESHOLD
     position_multiplier = 1.3 if high_confidence else 1.0
-    base_position_usd = 120.0
+    base_position_usd = 120.0 * capital_scale
     desired_position_usd = base_position_usd * position_multiplier
 
     ticker = _pine_ticker(symbol)

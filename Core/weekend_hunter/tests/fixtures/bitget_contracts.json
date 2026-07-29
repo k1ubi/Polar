@@ -1,0 +1,96 @@
+{
+  "_captured_at": "2026-07-29T08:50:57.535925+00:00",
+  "_note": "Captured from Bitget USDT-FUTURES. Offline fixture for sizing tests.",
+  "contracts": {
+    "AVAXUSDT": {
+      "maxLever": "75",
+      "minTradeNum": "0.1",
+      "minTradeUSDT": "5",
+      "pricePlace": "3",
+      "sizeMultiplier": "0.1",
+      "symbol": "AVAXUSDT",
+      "symbolStatus": "normal",
+      "volumePlace": "1"
+    },
+    "BTCUSDT": {
+      "maxLever": "150",
+      "minTradeNum": "0.0001",
+      "minTradeUSDT": "5",
+      "pricePlace": "1",
+      "sizeMultiplier": "0.0001",
+      "symbol": "BTCUSDT",
+      "symbolStatus": "normal",
+      "volumePlace": "4"
+    },
+    "DOGEUSDT": {
+      "maxLever": "75",
+      "minTradeNum": "1",
+      "minTradeUSDT": "5",
+      "pricePlace": "5",
+      "sizeMultiplier": "1",
+      "symbol": "DOGEUSDT",
+      "symbolStatus": "normal",
+      "volumePlace": "0"
+    },
+    "ETHUSDT": {
+      "maxLever": "150",
+      "minTradeNum": "0.01",
+      "minTradeUSDT": "5",
+      "pricePlace": "2",
+      "sizeMultiplier": "0.01",
+      "symbol": "ETHUSDT",
+      "symbolStatus": "normal",
+      "volumePlace": "2"
+    },
+    "LINKUSDT": {
+      "maxLever": "75",
+      "minTradeNum": "1",
+      "minTradeUSDT": "5",
+      "pricePlace": "3",
+      "sizeMultiplier": "1",
+      "symbol": "LINKUSDT",
+      "symbolStatus": "normal",
+      "volumePlace": "0"
+    },
+    "PEPEUSDT": {
+      "maxLever": "75",
+      "minTradeNum": "1000",
+      "minTradeUSDT": "5",
+      "pricePlace": "10",
+      "sizeMultiplier": "1000",
+      "symbol": "PEPEUSDT",
+      "symbolStatus": "normal",
+      "volumePlace": "0"
+    },
+    "POLUSDT": {
+      "maxLever": "50",
+      "minTradeNum": "1",
+      "minTradeUSDT": "5",
+      "pricePlace": "5",
+      "sizeMultiplier": "1",
+      "symbol": "POLUSDT",
+      "symbolStatus": "normal",
+      "volumePlace": "0"
+    },
+    "SOLUSDT": {
+      "maxLever": "100",
+      "minTradeNum": "0.1",
+      "minTradeUSDT": "5",
+      "pricePlace": "3",
+      "sizeMultiplier": "0.1",
+      "symbol": "SOLUSDT",
+      "symbolStatus": "normal",
+      "volumePlace": "1"
+    },
+    "XRPUSDT": {
+      "maxLever": "125",
+      "minTradeNum": "1",
+      "minTradeUSDT": "5",
+      "pricePlace": "4",
+      "sizeMultiplier": "1",
+      "symbol": "XRPUSDT",
+      "symbolStatus": "normal",
+      "volumePlace": "0"
+    }
+  }
+}
