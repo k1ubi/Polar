@@ -1,0 +1,27 @@
+# Credentials — never commit
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Runtime data — restored from backups or re-fetched on first run
+backups/
+Core/*/data/*
+!Core/*/data/.gitkeep
+Engines/*/data/*
+!Engines/*/data/.gitkeep
+Research/data/*
+!Research/data/.gitkeep
+
+# Editor / OS
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
