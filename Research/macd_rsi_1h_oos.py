@@ -33,8 +33,8 @@ symbols NOT in Research/data/bitget_1h/ on the first run's contaminated set):
   4. Positive mean R in at least 50% of calendar years with >= 20 trades
 
 Data requirements:
-  Run Research/bitget_1h_fetch.py first (caches to Research/data/bitget_1h/)
-  Run Research/binance_daily.py first   (for BTC daily regime)
+  Run Research/binance_1h_fetch.py first  (caches to Research/data/binance_1h/)
+  Run Research/binance_daily.py first     (for BTC daily regime, likely cached)
 
 Run: python3 -m Research.macd_rsi_1h_oos
 """
@@ -48,9 +48,10 @@ from scipy import stats
 
 # ── paths ─────────────────────────────────────────────────────────────────────
 from pathlib import Path
-from Research.trend_oos import CACHE as BINANCE_CACHE, polar_bases
+from Research.trend_oos import CACHE as BINANCE_DAILY_CACHE, polar_bases
 
-HOURLY_CACHE = Path(__file__).parent / "data" / "bitget_1h"
+HOURLY_CACHE = Path(__file__).parent / "data" / "binance_1h"
+BINANCE_CACHE = BINANCE_DAILY_CACHE  # BTC daily regime uses Binance daily data
 
 # ── constants (do NOT change after first run) ─────────────────────────────────
 MACD_FAST = 12
@@ -240,7 +241,7 @@ def describe(label: str, r: pd.Series) -> None:
 def main() -> None:
     if not HOURLY_CACHE.exists() or not any(HOURLY_CACHE.iterdir()):
         print("ERROR: 1H cache is empty.")
-        print("  Run first: python3 -m Research.bitget_1h_fetch")
+        print("  Run first: python3 -m Research.binance_1h_fetch")
         return
 
     regime = _btc_regime()
