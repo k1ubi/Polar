@@ -1,19 +1,116 @@
-"""Shared Telegram helpers used by all Cores and bots."""
+"""Generic Telegram delivery: async helpers for daemon loops, plus the
+synchronous TelegramNotifier used by Weekend Hunter and other Cores that
+poll rather than run an asyncio event loop.
+
+Per-Core message CONTENT lives in that Core's own daemon, not here.
+Credentials from `.env`: TELEGRAM_BOT_TOKEN / TELEGRAM_ADMIN_CHAT_ID.
+"""
 from __future__ import annotations
 
 import logging
+import os
 import re
+from datetime import datetime
 
 import aiohttp
+import requests
 
 logger = logging.getLogger(__name__)
 
 _TOKEN_RE = re.compile(r"bot\d+:[A-Za-z0-9_-]+", re.IGNORECASE)
 
+# ── keyboard / button labels ───────────────────────────────────────────────
+
+BUTTON_POSITIONS = "📊 Positions"
+BUTTON_REPORT = "📈 Report"
+BUTTON_WEEKEND_HUNTER = "🎯 Weekend Hunter"
+BUTTON_VPA = "📊 VPA"
+BUTTON_PENDING = "⏳ Pending Trades"
+BUTTON_STATISTICS = "📐 Statistics"
+BUTTON_STATUS = "⚡️ Status"
+
+PERSISTENT_KEYBOARD = {
+    "keyboard": [
+        [{"text": BUTTON_POSITIONS}, {"text": BUTTON_REPORT}],
+        [{"text": BUTTON_WEEKEND_HUNTER}, {"text": BUTTON_VPA}],
+        [{"text": BUTTON_PENDING}, {"text": BUTTON_STATISTICS}],
+        [{"text": BUTTON_STATUS}],
+    ],
+    "resize_keyboard": True,
+}
+
+# ── formatting helpers ─────────────────────────────────────────────────────
+
+
+def fmt_price(price: float) -> str:
+    """Sane decimal precision across BTC (~65k), XRP (~1), DOGE (~0.07)."""
+    if price >= 100:
+        return f"{price:,.2f}"
+    if price >= 1:
+        return f"{price:,.4f}"
+    return f"{price:.6f}"
+
+
+def fmt_time(iso_str: str | None) -> str:
+    """MM-DD HH:MM — easier to scan than a full ISO timestamp."""
+    if not iso_str:
+        return "?"
+    try:
+        return datetime.fromisoformat(iso_str).strftime("%m-%d %H:%M")
+    except ValueError:
+        return iso_str
+
+
+def row_block(rows: list[tuple[str, str]]) -> str:
+    """Label/value pairs in a monospace <pre> block."""
+    label_width = max(len(label) for label, _ in rows) + 2
+    table = "\n".join(f"{label:<{label_width}}{value}" for label, value in rows)
+    return f"<pre>{table}</pre>"
+
 
 def _scrub(text: str) -> str:
-    """Remove any bot token from a string before logging."""
     return _TOKEN_RE.sub("bot<REDACTED>", text)
+
+
+# ── synchronous notifier (Weekend Hunter, polling daemons) ─────────────────
+
+
+class TelegramNotifier:
+    def __init__(self, bot_token: str | None = None, chat_id: str | None = None):
+        self.bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN")
+        self.chat_id = chat_id or os.getenv("TELEGRAM_ADMIN_CHAT_ID")
+        if not self.bot_token or not self.chat_id:
+            raise ValueError(
+                "TELEGRAM_BOT_TOKEN / TELEGRAM_ADMIN_CHAT_ID not set — see .env"
+            )
+        self._base = f"https://api.telegram.org/bot{self.bot_token}"
+
+    def send(self, message: str, reply_markup: dict | None = None) -> None:
+        self.send_tracked(message, reply_markup=reply_markup)
+
+    def send_tracked(self, message: str, reply_markup: dict | None = None) -> int | None:
+        payload = {"chat_id": self.chat_id, "text": message, "parse_mode": "HTML"}
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        resp = requests.post(f"{self._base}/sendMessage", json=payload, timeout=10)
+        resp.raise_for_status()
+        return resp.json().get("result", {}).get("message_id")
+
+    def edit_message(self, message_id: int, message: str) -> None:
+        resp = requests.post(
+            f"{self._base}/editMessageText",
+            json={
+                "chat_id": self.chat_id,
+                "message_id": message_id,
+                "text": message,
+                "parse_mode": "HTML",
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+
+
+# ── async helpers (VPA daemon, asyncio loops) ──────────────────────────────
 
 
 async def send_message(
@@ -45,7 +142,6 @@ async def notify_loop_failure(
     core_name: str,
     error: Exception,
 ) -> None:
-    """Alert the admin that a daemon loop raised an unhandled exception."""
     text = (
         f"🚨 <b>{core_name}</b> loop failure\n"
         f"<code>{type(error).__name__}: {_scrub(str(error))}</code>"

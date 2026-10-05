@@ -1,0 +1,148 @@
+{
+  "account": {
+    "available_usdt": 163.0,
+    "equity_usdt": 163.0,
+    "open_at_venue": {
+      "AVAXUSDT": null,
+      "BTCUSDT": null,
+      "DOGEUSDT": null,
+      "ETHUSDT": null,
+      "LINKUSDT": null,
+      "PEPEUSDT": null,
+      "POLUSDT": null,
+      "SOLUSDT": null,
+      "XRPUSDT": null
+    },
+    "venue": "bitget-usdt-futures"
+  },
+  "capital": {
+    "capital_scale": 0.326,
+    "initial_capital_usdt": 163.0,
+    "paper_wallet_usdt": 500.0,
+    "pine_design_capital": 500.0
+  },
+  "captured_at": "2026-07-29T08:50:50.774065+00:00",
+  "git": {
+    "branch": "main",
+    "dirty": true,
+    "head": "cfb9305"
+  },
+  "leverage": {
+    "max": 20.0,
+    "min": 5.0
+  },
+  "market_at_capture": {
+    "AVAXUSDT": {
+      "atr": 0.025715006658965846,
+      "price": 6.419,
+      "stop_distance_pct": 0.5271153618567771,
+      "target_distance_pct": 2.0551173728072123
+    },
+    "BTCUSDT": {
+      "atr": 137.90901165755818,
+      "price": 64448.63,
+      "stop_distance_pct": 0.2815563742242537,
+      "target_distance_pct": 1.0977319918255453
+    },
+    "DOGEUSDT": {
+      "atr": 0.00023761349979702548,
+      "price": 0.07083,
+      "stop_distance_pct": 0.44140807826937006,
+      "target_distance_pct": 1.7209618155565942
+    },
+    "ETHUSDT": {
+      "atr": 6.2337625479571255,
+      "price": 1917.0,
+      "stop_distance_pct": 0.4278726730333196,
+      "target_distance_pct": 1.6681899776223263
+    },
+    "LINKUSDT": {
+      "atr": 0.028921792384892713,
+      "price": 8.443,
+      "stop_distance_pct": 0.4507282953940743,
+      "target_distance_pct": 1.7572994780824358
+    },
+    "PEPEUSDT": {
+      "atr": 1.3099943210665235e-08,
+      "price": 2.752e-06,
+      "stop_distance_pct": 0.6263360240717333,
+      "target_distance_pct": 2.44195889065089
+    },
+    "POLUSDT": {
+      "atr": 0.00022054109913919158,
+      "price": 0.07176,
+      "stop_distance_pct": 0.4043835796573126,
+      "target_distance_pct": 1.5766107003679672
+    },
+    "SOLUSDT": {
+      "atr": 0.2504385035419643,
+      "price": 74.08,
+      "stop_distance_pct": 0.44482228235115706,
+      "target_distance_pct": 1.734273114430719
+    },
+    "XRPUSDT": {
+      "atr": 0.003555307156725098,
+      "price": 1.0876,
+      "stop_distance_pct": 0.43012465359811647,
+      "target_distance_pct": 1.6769699994483047
+    }
+  },
+  "mode": {
+    "halted": false,
+    "trading_mode": "live",
+    "weekend_only": true
+  },
+  "position_sizes_usdt_margin": {
+    "AVAXUSDT": {
+      "high_confidence": 40.68480000000001,
+      "normal": 31.296000000000006
+    },
+    "BTCUSDT": {
+      "high_confidence": 50.85600000000001,
+      "normal": 39.120000000000005
+    },
+    "DOGEUSDT": {
+      "high_confidence": 40.68480000000001,
+      "normal": 31.296000000000006
+    },
+    "ETHUSDT": {
+      "high_confidence": 50.85600000000001,
+      "normal": 39.120000000000005
+    },
+    "LINKUSDT": {
+      "high_confidence": 40.68480000000001,
+      "normal": 31.296000000000006
+    },
+    "PEPEUSDT": {
+      "high_confidence": 25.428000000000004,
+      "normal": 19.560000000000002
+    },
+    "POLUSDT": {
+      "high_confidence": 40.68480000000001,
+      "normal": 31.296000000000006
+    },
+    "SOLUSDT": {
+      "high_confidence": 40.68480000000001,
+      "normal": 31.296000000000006
+    },
+    "XRPUSDT": {
+      "high_confidence": 40.68480000000001,
+      "normal": 31.296000000000006
+    }
+  },
+  "risk_gates": {
+    "can_afford_threshold": 55.42,
+    "daily_loss_limit_usdt": 8.15,
+    "emergency_stop_below_usdt": 114.1,
+    "max_concurrent_positions": 4,
+    "max_consecutive_losses": 4,
+    "min_capital_per_trade": 39.120000000000005,
+    "safety_buffer": 16.3,
+    "weekend_loss_limit_usdt": 24.45
+  },
+  "store": {
+    "closed_positions": 0,
+    "open_positions": 0,
+    "realized_pnl_usdt": 0
+  }
+}
