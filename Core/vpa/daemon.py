@@ -35,6 +35,7 @@ from Core.Library.risk import (
     position_size_usd,
 )
 from Core.Library.settings import get_settings
+from Core.vpa import execution as exec_layer
 from Core.vpa import positions as store
 
 logger = logging.getLogger(__name__)
@@ -97,7 +98,10 @@ def _load_baseline() -> float:
 
 
 def _equity() -> float:
-    """Estimate current equity: baseline + sum of closed PnL."""
+    """Current equity: live balance in live mode, else baseline + closed PnL."""
+    live = exec_layer.equity_live()
+    if live is not None:
+        return live
     baseline = _load_baseline()
     return baseline + store.realized_pnl_usdt()
 
@@ -229,6 +233,12 @@ def _check_exits(bars_all: dict[str, list]) -> list[dict]:
     if not open_positions:
         return []
 
+    # In live mode, discover positions the venue already closed (stop/target).
+    for venue_closed in exec_layer.reconcile_closes(open_positions):
+        store.upsert(venue_closed)
+        closed_this_cycle.append(venue_closed)
+        open_positions = [p for p in open_positions if p["id"] != venue_closed["id"]]
+
     for pos in open_positions:
         symbol = pos["symbol"]
         a = _symbol_bars(bars_all, symbol)
@@ -330,6 +340,14 @@ def _open_pending(bars_all: dict[str, list]) -> list[dict]:
             "opened_at": datetime.now(tz=timezone.utc).isoformat(),
             "pnl_usdt": None,
         }
+        # Live execution — place order at venue if armed.
+        mode = exec_layer.trading_mode()
+        if mode != exec_layer.MODE_OFF and not exec_layer.halted():
+            fill = exec_layer.open_position_live(pos)
+            if fill is not None:
+                pos["exchange_order_id"] = fill.order_id
+                pos["entry"] = fill.avg_price  # venue's actual fill beats signal price
+
         store.upsert(pos)
         open_symbols.add(symbol)
         opened.append(pos)
