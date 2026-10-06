@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -370,6 +371,8 @@ def _scan_new_signals(bars_all: dict[str, list]) -> list[dict]:
         logger.info("[vpa] at max positions (%d) — skipping new signals", MAX_OPEN)
         return []
 
+    shorts_enabled = os.getenv("POLAR_VPA_SHORTS", "true").strip().lower() not in ("false", "0", "no")
+
     new_signals: list[dict] = []
     for symbol, _ in bars_all.items():
         if symbol in open_symbols or symbol in pending_symbols:
@@ -378,7 +381,7 @@ def _scan_new_signals(bars_all: dict[str, list]) -> list[dict]:
         if a is None:
             continue
         setup = _scan_setup(symbol, a)
-        if setup is not None:
+        if setup is not None and (shorts_enabled or setup["direction"] != "bearish"):
             new_signals.append(setup)
             logger.info(
                 "[vpa] signal: %s %s  close=%.4f  stop=%.4f  target=%.4f",
