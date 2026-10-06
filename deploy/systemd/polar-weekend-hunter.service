@@ -1,0 +1,25 @@
+[Unit]
+Description=Polar - Weekend Hunter daemon (signal generation + position management)
+After=network-online.target
+Wants=network-online.target
+# Explicit rather than relying on systemd's undocumented default -- see the
+# 2026-09-11 operational-resilience audit: RestartSec (15s) exceeded the
+# implicit 10s rate-limit window, so a persistently crash-looping process
+# (e.g. a revoked API key) restarted forever with no burst limit ever
+# tripping. At 10 restarts / 10 minutes this now actually stops and surfaces
+# as `failed` in `systemctl --user status` / the admin bot's /status panel
+# instead of looping silently forever. Paired with notify_loop_failure's
+# Telegram alert (Core/Library/telegram.py) for the case that pages a human
+# before this limit is even reached.
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=simple
+WorkingDirectory=/home/kyubi/Polar
+ExecStart=/usr/bin/python3 -m Core.weekend_hunter.daemon
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=default.target
