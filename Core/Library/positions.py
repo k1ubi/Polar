@@ -68,6 +68,7 @@ class Position:
     # Filled quantity in base coin, as accepted by the venue after its own
     # step/precision rounding -- not the size we asked for.
     exchange_size_base: float | None = None
+    exit_reason: str | None = None
 
 
 def _load_raw(path: Path) -> list[dict]:
