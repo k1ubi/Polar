@@ -464,6 +464,7 @@ async def run() -> None:
                                 broadcast.fan_out_closed,
                                 pos,
                                 settings.telegram_customer_bot_token,
+                                exec_layer.trading_mode() == exec_layer.MODE_LIVE,
                             )
 
                     # 2. Open positions from pending signals
@@ -480,6 +481,7 @@ async def run() -> None:
                                 broadcast.fan_out_opened,
                                 pos,
                                 settings.telegram_customer_bot_token,
+                                exec_layer.trading_mode() == exec_layer.MODE_LIVE,
                             )
 
                     # 3. Scan for new signals

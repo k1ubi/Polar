@@ -145,6 +145,7 @@ def _finalize(position: Position, notifier: tg.TelegramNotifier) -> None:
                 "pnl_usdt": getattr(position, "pnl_usdt", None),
             },
             customer_token,
+            execution.trading_mode() == execution.MODE_LIVE,
         )
 
 
@@ -366,7 +367,6 @@ def run_once(notifier: tg.TelegramNotifier) -> None:
         if customer_token:
             broadcast.fan_out_opened(
                 {
-                    "id": position.id,
                     "symbol": symbol,
                     "direction": signal.direction,
                     "stop": sl,
@@ -374,6 +374,7 @@ def run_once(notifier: tg.TelegramNotifier) -> None:
                     "leverage": signal.final_leverage,
                 },
                 customer_token,
+                execution.trading_mode() == execution.MODE_LIVE,
             )
 
 

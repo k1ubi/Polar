@@ -30,13 +30,16 @@ def _telegram(bot_token: str, chat_id: int, text: str) -> None:
         logger.warning("[broadcast] telegram to %s failed: %s", chat_id, exc)
 
 
-def fan_out_opened(signal: dict, customer_bot_token: str) -> None:
+def fan_out_opened(signal: dict, customer_bot_token: str, live_mode: bool = False) -> None:
     """Open a mirrored position on each enabled customer's Bitget account.
 
     `signal` must contain: symbol, direction, stop, target, leverage.
-    Optionally `id` (used as client_oid — a UUID is generated when absent).
     Customer's own `margin_usdt` (set during registration) is used for sizing.
+    Gated on `live_mode`: customers receive real orders only when the calling
+    daemon is itself trading live (POLAR_LIVE_TRADING / POLAR_LIVE_TRADING_VPA).
     """
+    if not live_mode:
+        return
     if not customer_bot_token:
         return
     customers = customer_store.enabled_customers()
@@ -89,11 +92,14 @@ def fan_out_opened(signal: dict, customer_bot_token: str) -> None:
             logger.error("[broadcast] unexpected error customer=%s: %s", chat_id, exc)
 
 
-def fan_out_closed(pos: dict, customer_bot_token: str) -> None:
+def fan_out_closed(pos: dict, customer_bot_token: str, live_mode: bool = False) -> None:
     """Notify all enabled customers that an admin position closed.
 
     Informational only — customer exits are managed by Bitget TP/SL.
+    Gated on `live_mode` for consistency with fan_out_opened.
     """
+    if not live_mode:
+        return
     if not customer_bot_token:
         return
     customers = customer_store.enabled_customers()
