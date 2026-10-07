@@ -75,6 +75,7 @@ class CustomerBot:
             {"command": "pause",    "description": "Pause mirrored trades temporarily"},
             {"command": "resume",   "description": "Resume mirrored trades"},
             {"command": "revoke",   "description": "Delete your credentials from Polar"},
+            {"command": "cancel",   "description": "Cancel the current registration flow"},
         ]
         requests.post(f"{self._base}/setMyCommands",
                       json={"commands": commands}, timeout=10)
@@ -168,6 +169,13 @@ def _handle_resume(bot: CustomerBot, chat_id: int) -> None:
     cust["enabled"] = True
     customer_store.upsert(cust)
     bot.send(chat_id, "▶️ Resumed. You'll receive the next signals from Polar.")
+
+
+def _handle_cancel(bot: CustomerBot, chat_id: int) -> None:
+    if _reg_state.pop(chat_id, None):
+        bot.send(chat_id, "Registration cancelled. Use /register to start again.")
+    else:
+        bot.send(chat_id, "Nothing to cancel.")
 
 
 def _handle_revoke(bot: CustomerBot, chat_id: int) -> None:
@@ -319,6 +327,8 @@ def main() -> None:
                     _handle_pause(bot, chat_id)
                 elif text.startswith("/resume"):
                     _handle_resume(bot, chat_id)
+                elif text.startswith("/cancel"):
+                    _handle_cancel(bot, chat_id)
                 elif text.startswith("/revoke"):
                     _handle_revoke(bot, chat_id)
                 elif text.startswith("/customers"):

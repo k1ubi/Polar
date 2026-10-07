@@ -64,7 +64,7 @@ def fan_out_opened(signal: dict, customer_bot_token: str) -> None:
                 leverage=signal["leverage"],
                 stop_loss=signal["stop"],
                 take_profit=signal["target"],
-                client_oid=signal.get("id") or str(uuid.uuid4()),
+                client_oid=str(uuid.uuid4()),
             )
             side_label = "🟢 LONG" if signal["direction"] == "bullish" else "🔴 SHORT"
             text = (

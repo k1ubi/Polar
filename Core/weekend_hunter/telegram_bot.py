@@ -50,7 +50,7 @@ from Core.weekend_hunter import positions as store
 # rather than reading anything Polar itself wrote, so a service that's
 # hung or crash-looping still shows up accurately (a daemon can't
 # self-report that it's stuck).
-SERVICES = ["polar-weekend-hunter", "polar-weekend-hunter-bot", "polar-vpa"]
+SERVICES = ["polar-weekend-hunter", "polar-weekend-hunter-bot", "polar-vpa", "polar-customer-bot"]
 
 VPA_PENDING_PATH = Path(__file__).resolve().parent.parent / "vpa" / "data" / "pending.json"
 
