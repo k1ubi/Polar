@@ -31,7 +31,9 @@ load_dotenv()
 
 from Core.Library import telegram as tg
 from Core.Library.broker import BrokerError
+from Core.customer_bot import broadcast
 from Core.Library.candlestick_trend.backtest import fetch_ohlcv
+from Core.Library.settings import get_settings
 from Core.Library.indicators import compute_atr
 from Core.Library.positions import Position
 from Core.weekend_hunter import execution
@@ -133,6 +135,17 @@ def _finalize(position: Position, notifier: tg.TelegramNotifier) -> None:
             notifier.edit_message(position.message_id, format_closed_message(position))
         except Exception as exc:  # noqa: BLE001
             print(f"[weekend_hunter] failed to edit message for {position.id}: {exc}", flush=True)
+    customer_token = get_settings().telegram_customer_bot_token
+    if customer_token:
+        broadcast.fan_out_closed(
+            {
+                "symbol": position.symbol,
+                "direction": position.direction,
+                "exit_reason": getattr(position, "status", "?"),
+                "pnl_usdt": getattr(position, "pnl_usdt", None),
+            },
+            customer_token,
+        )
 
 
 def check_open_positions(notifier: tg.TelegramNotifier, broker_equity: float | None = None) -> None:
@@ -349,6 +362,19 @@ def run_once(notifier: tg.TelegramNotifier) -> None:
         store.add(position)
         print(f"[weekend_hunter] opened {symbol} {signal.direction} margin={position_usd:.2f} USDT "
               f"leverage={signal.final_leverage}x mode={execution.trading_mode()}", flush=True)
+        customer_token = get_settings().telegram_customer_bot_token
+        if customer_token:
+            broadcast.fan_out_opened(
+                {
+                    "id": position.id,
+                    "symbol": symbol,
+                    "direction": signal.direction,
+                    "stop": sl,
+                    "target": tp,
+                    "leverage": signal.final_leverage,
+                },
+                customer_token,
+            )
 
 
 def main() -> None:

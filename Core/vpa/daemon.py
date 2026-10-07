@@ -29,6 +29,7 @@ import pandas as pd
 
 from Core.Library import telegram as tg
 from Core.Library.paper_fills import pnl_usdt, resolve_exit
+from Core.customer_bot import broadcast
 from Core.Library.risk import (
     MAX_CONSECUTIVE_LOSSES,
     is_in_cooldown,
@@ -458,6 +459,12 @@ async def run() -> None:
                             pos["exit_reason"], pos.get("pnl_usdt") or 0,
                         )
                         await _notify_closed(session, settings, pos)
+                        if settings.telegram_customer_bot_token:
+                            await asyncio.to_thread(
+                                broadcast.fan_out_closed,
+                                pos,
+                                settings.telegram_customer_bot_token,
+                            )
 
                     # 2. Open positions from pending signals
                     opened = _open_pending(bars_all)
@@ -468,6 +475,12 @@ async def run() -> None:
                             pos["stop"], pos["target"],
                         )
                         await _notify_opened(session, settings, pos)
+                        if settings.telegram_customer_bot_token:
+                            await asyncio.to_thread(
+                                broadcast.fan_out_opened,
+                                pos,
+                                settings.telegram_customer_bot_token,
+                            )
 
                     # 3. Scan for new signals
                     new_sigs = _scan_new_signals(bars_all)
