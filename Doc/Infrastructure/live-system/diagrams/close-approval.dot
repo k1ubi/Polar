@@ -1,0 +1,21 @@
+digraph appr {
+  rankdir=LR; fontname="Helvetica"; nodesep=0.35; ranksep=0.6; pad=0.3;
+  node [fontname="Helvetica", fontsize=11, shape=box, style="rounded,filled", fillcolor="#ffffff", color="#444444"];
+  edge [fontname="Helvetica", fontsize=9, color="#555555"];
+  labelloc=t; label="Closing a position: the only path"; fontsize=14;
+
+  g1 [label="guardian.py\ncreates a request", fillcolor="#e4f4ea"];
+  req [label="close-requests.json", shape=cylinder, fillcolor="#f5f5f5"];
+  msg [label="Telegram message\nwith three buttons", fillcolor="#d8ecfb"];
+  bot [label="polar-bot\nasks 'are you sure?'", fillcolor="#fbf0d6"];
+  app [label="close-approvals.json", shape=cylinder, fillcolor="#f5f5f5"];
+  g2 [label="guardian.py\nexecute_approved()\nthe only place that runs 'position close'", fillcolor="#e4f4ea"];
+  chk [label="Checks first:\nrequest exists, approval newer than request,\nno later 'Leave', same quantity,\nno staged order waiting", shape=note, fillcolor="#ffffff"];
+  bk [label="Bitget", fillcolor="#fde8c8"];
+  pause [label="No answer after 30 min:\npause.json -> no new entries,\nrequest repeated", fillcolor="#fde8c8"];
+
+  g1 -> req; g1 -> msg; msg -> bot [label="tap on Close"]; bot -> app [label="second tap confirms"];
+  app -> g2; g2 -> chk [style=dashed]; g2 -> bk [label="close, then push"];
+  msg -> pause [style=dashed, label="silence"];
+  bot -> req [label="Leave: rejected,\nquiet for 6 h\nLeave-and-mute: never again", style=dashed];
+}

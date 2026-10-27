@@ -1,0 +1,29 @@
+digraph life {
+  rankdir=TB; fontname="Helvetica"; nodesep=0.3; ranksep=0.4; pad=0.3;
+  node [fontname="Helvetica", fontsize=11, shape=box, style="rounded,filled", fillcolor="#ffffff", color="#444444"];
+  edge [fontname="Helvetica", fontsize=9, color="#555555"];
+  labelloc=t; label="One trade from signal to exit"; fontsize=14;
+
+  r  [label="regime.py (every 2 h)\nBTC trend + futures basis + option signals\n-> BULLISH, BEARISH or NEUTRAL", fillcolor="#e4f4ea"];
+  g  [label="scanner.py (every 15 min)\nGate checks: not paused, breaker not tripped,\nregime not NEUTRAL, not 09-12 UTC,\nless than 5 positions, less than 2 in this direction", fillcolor="#e4f4ea"];
+  sc [label="Score the 20 coins out of 8\nneeds 7 or more, in the regime's direction\n(BULLISH = long only, BEARISH = short only)", fillcolor="#e4f4ea"];
+  f  [label="Filters\nBTC-correlation, news headlines", fillcolor="#e4f4ea"];
+  rv [label="Sonnet review of that one entry\nAPPROVE or VETO. Any error = VETO", fillcolor="#efe0f7"];
+  o  [label="Limit order at the current price\nsize = 1.5% of equity at risk\nsent to Bitget", fillcolor="#fde8c8"];
+  fill [label="guardian.py sees the fill\n(order expires after 45 min if not filled)", fillcolor="#e4f4ea"];
+  tp [label="Take-profit order placed on Bitget\n2x the stop distance", fillcolor="#fde8c8"];
+  mon [label="Guardian watches every 5 min\nstop level, regime, 1R, trailing level, liquidation distance", fillcolor="#e4f4ea"];
+  tpend [label="TP order fills on Bitget\nguardian records TP_HIT", fillcolor="#fde8c8"];
+  ask [label="Stop crossed, regime flipped,\nor price reached 1R\n-> close REQUEST to Lorenzo on Telegram", fillcolor="#d8ecfb"];
+  dec [label="Lorenzo taps\nClose / Leave / Leave and don't ask again", shape=diamond, fillcolor="#fbf0d6"];
+  cl  [label="Guardian closes\n(full, or half at 1R)", fillcolor="#fde8c8"];
+  keep[label="Position stays open", fillcolor="#f5f5f5"];
+
+  r -> g -> sc -> f -> rv -> o -> fill -> tp -> mon;
+  mon -> tpend [label="price hits TP"];
+  mon -> ask [label="conditions met"];
+  ask -> dec;
+  dec -> cl [label="Close, confirmed"];
+  dec -> keep [label="Leave"];
+  keep -> mon [style=dashed, label="asked again after 6 h\n(never, if muted)"];
+}

@@ -1,0 +1,59 @@
+digraph polar {
+  rankdir=TB; compound=true; fontname="Helvetica"; nodesep=0.4; ranksep=0.9; pad=0.3; newrank=true;
+  node [fontname="Helvetica", fontsize=11, shape=box, style="rounded,filled", fillcolor="#ffffff", color="#444444"];
+  edge [fontname="Helvetica", fontsize=10, color="#555555"];
+  labelloc=t; label="Polar architecture (machine kyubi-kali)"; fontsize=15;
+
+  tg [label="Telegram\nLorenzo's phone  |  customers' phones", fillcolor="#d8ecfb"];
+
+  subgraph cluster_bots {
+    label="Always-on services (systemd)"; style="rounded"; color="#b7791f"; fontsize=11;
+    bot  [label="polar-bot\n@polar_aibot, owner only\nmenus, approvals, Decisions", fillcolor="#fbf0d6"];
+    ubot [label="polar-user-bot\n@polar_user_bot\ncustomer copy trading", fillcolor="#fbf0d6"];
+  }
+
+  state [label="State files (JSON)\n/home/kyubi/polar/state\nwritten under one lock", shape=cylinder, fillcolor="#f5f5f5"];
+
+  subgraph cluster_timers {
+    label="Scheduled scripts (systemd timers, plain Python)"; style="rounded"; color="#2f855a"; fontsize=11;
+    regime   [label="regime.py\nevery 2 h", fillcolor="#e4f4ea"];
+    scanner  [label="scanner.py\nevery 15 min", fillcolor="#e4f4ea"];
+    guardian [label="guardian.py\nevery 5 min", fillcolor="#e4f4ea"];
+    portfolio[label="portfolio.py\nevery 30 min", fillcolor="#e4f4ea"];
+    audit    [label="audit.py\nevery hour", fillcolor="#e4f4ea"];
+    backup   [label="backup.sh\ndaily 03:00", fillcolor="#e4f4ea"];
+  }
+
+  claude [label="Claude Sonnet 5.5\nentry review (scanner)\nmismatch explanation (audit)", fillcolor="#efe0f7"];
+  gh     [label="GitHub, private repos\nOpenAliceBackup, Polar", fillcolor="#eeeeee"];
+
+  subgraph cluster_oa {
+    label="OpenAlice 0.94.1 (service 'openalice', web UI 127.0.0.1:47331)"; style="rounded"; color="#2b6cb0"; fontsize=11;
+    oa_data [label="alice analysis / market / rss\ncandles, indicators, news", fillcolor="#e6f0fa"];
+    oa_th   [label="traderhub\nfutures curve, option chains", fillcolor="#e6f0fa"];
+    oa_uta  [label="alice-uta\naccount, orders, positions\n'git push' = real execution", fillcolor="#e6f0fa"];
+  }
+
+  deribit [label="Deribit\n(option data, read-only)", fillcolor="#eeeeee"];
+  bitget  [label="Bitget\nUSDT-M perpetuals\nsub-account 'derivatives'", fillcolor="#fde8c8"];
+  custbg  [label="Customers' own\nBitget accounts", fillcolor="#fde8c8"];
+
+  tg -> bot  [dir=both, label="  buttons, commands, alerts"];
+  tg -> ubot [dir=both, label="  /register, /status"];
+  guardian -> tg [ltail=cluster_timers, label="  alerts and close requests", constraint=false, style=dashed];
+
+  bot -> state  [dir=both];
+  ubot -> state [dir=both];
+  regime -> state [ltail=cluster_timers, dir=both, label="  read / write"];
+
+  regime -> portfolio [style=invis]; scanner -> audit [style=invis]; guardian -> backup [style=invis];
+  scanner -> claude [style=dashed];
+  audit -> claude [style=dashed];
+  backup -> gh [label="  git push"];
+
+  guardian -> oa_data [ltail=cluster_timers, lhead=cluster_oa, label="  every script calls the\n  openalice CLI"];
+  oa_uta -> bitget [dir=both, label="  orders, positions"];
+  oa_data -> bitget [dir=back, label="  candles"];
+  deribit -> oa_th;
+  ubot -> custbg [label="  orders with each\n  customer's API key", color="#b7791f", constraint=false];
+}
