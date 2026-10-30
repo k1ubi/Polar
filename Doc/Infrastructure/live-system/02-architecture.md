@@ -12,7 +12,7 @@
 **Always-on services.** `polar-bot` and `polar-user-bot` run all the time and wait for messages.
 They are systemd user services and restart themselves if they crash.
 
-**State files.** A folder of JSON files (`/home/kyubi/polar/state`). This is how the pieces pass
+**State files.** A folder of JSON files (`/home/kyubi/Polar/live/state`). This is how the pieces pass
 information to each other: the scanner writes a pending order, the guardian reads it, the bot reads
 what the guardian wrote. Nothing talks to anything else directly. Details in
 [07 State files](07-state-files.md).

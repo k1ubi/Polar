@@ -1,7 +1,7 @@
 # 05 Scheduled jobs
 
 Every job is a systemd user unit pair: a `.service` that runs a script once and a `.timer` that
-starts it. Files are in `~/.config/systemd/user/`. The scripts are in `/home/kyubi/polar/bin/`.
+starts it. Files are in `~/.config/systemd/user/`. The scripts are in `/home/kyubi/Polar/live/bin/`.
 
 | Timer | Interval | Script | Reads | Writes | Model used |
 |---|---|---|---|---|---|
@@ -10,7 +10,7 @@ starts it. Files are in `~/.config/systemd/user/`. The scripts are in `/home/kyu
 | `polar-portfolio` | 30 min | `portfolio.py` | Bitget account, candles | `portfolio-history.jsonl`, `circuit-breaker.json`, `metrics-cache.json`, `correlation-advisory.json` | none |
 | `polar-regime` | 2 h | `regime.py` | BTC candles, futures curve, Deribit options | `regime.json` | none |
 | `polar-audit` | 1 h | `audit.py` | state files, Bitget | Telegram message only | Sonnet 5.5, only when something is wrong |
-| `polar-backup` | daily, 03:00 CAT | `openalice-backup/backup.sh` | everything below | commits and pushes to GitHub | none |
+| `polar-backup` | daily, 03:00 CAT | `github-backup/backup.sh` | everything below | commits and pushes to GitHub | none |
 | `polar-update-check` | Mondays 09:00 CAT | `check-update.sh` | OpenAlice release info | Telegram message once per new version | none |
 
 After a reboot, the recurring timers start their first run within 1 to 5 minutes.
@@ -67,7 +67,7 @@ See [09 Operations](09-operations.md#backups).
 ## check-update.sh and upgrade-openalice.sh
 
 The weekly check asks OpenAlice whether a newer stable release exists and tells Lorenzo once per
-version. It changes nothing. Upgrading is done by hand with `bash ~/polar/bin/upgrade-openalice.sh`.
+version. It changes nothing. Upgrading is done by hand with `bash ~/Polar/live/bin/upgrade-openalice.sh`.
 That script refuses to run while entry orders are pending, makes a backup, upgrades, restarts,
 smoke-tests the Polar scripts, and rolls back by itself if a test fails.
 

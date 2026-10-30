@@ -61,12 +61,28 @@ The "git" in `alice-uta` is OpenAlice's way of working: an order is first staged
 `git status` and refuses to go on if anything else is already staged, because `push` would send
 that too.
 
+## One working directory
+
+Everything of the project sits under `/home/kyubi/Polar`:
+
+```
+/home/kyubi/Polar/
+├── live/            the running system (below)
+├── github-backup/   the backup script and its Git repository (OpenAliceBackup)
+├── Doc/ Core/ Engines/ Research/ ...   the older rebuild code and this documentation
+```
+
+`live/` and `github-backup/` are in `.gitignore` of the `Polar` repository, because the live
+scripts contain the bot tokens. They reach GitHub only through the private backup repository.
+Two things cannot be inside it: `~/.openalice` (OpenAlice's own folder) and
+`~/.config/systemd/user` (where systemd reads the units from).
+
 ## Languages and layout of the code
 
 About 2,800 lines of Python and shell in `bin/` and `bot/`, plus about 1,000 lines of tools and tests.
 
 ```
-/home/kyubi/polar/
+/home/kyubi/Polar/live/
 ├── bin/        regime.py scanner.py guardian.py portfolio.py audit.py gate.py (unused)
 │               check-update.sh upgrade-openalice.sh
 ├── bot/        polar-bot.py polar-user-bot.py

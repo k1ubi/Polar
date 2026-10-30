@@ -5,7 +5,7 @@ Both bots are Python programs built on `python-telegram-bot` 22.8 and run as sys
 
 ## Owner bot (`@polar_aibot`)
 
-File: `/home/kyubi/polar/bot/polar-bot.py`.
+File: `/home/kyubi/Polar/live/bot/polar-bot.py`.
 
 It answers one Telegram chat only, Lorenzo's. Messages from any other chat are ignored.
 
@@ -50,7 +50,7 @@ not lost.
 
 ## Customer bot
 
-File: `/home/kyubi/polar/bot/polar-user-bot.py`. Handle: `@polar_user_bot`.
+File: `/home/kyubi/Polar/live/bot/polar-user-bot.py`. Handle: `@polar_user_bot`.
 
 Lets other people copy Polar's trades on their own Bitget accounts. At the time of writing nobody is
 registered, and it has not been tried on a real customer account.

@@ -25,3 +25,7 @@ Research/data/*
 *.swo
 .idea/
 .vscode/
+
+# Live trading system and backup repo (hold bot tokens; backed up to OpenAliceBackup instead)
+/live/
+/github-backup/

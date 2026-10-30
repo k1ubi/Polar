@@ -54,7 +54,7 @@ and run the command in [02 Architecture](02-architecture.md#redrawing-the-diagra
 
 ## Not in this repository
 
-The scripts themselves live in `/home/kyubi/polar` on the machine, not in this repository. They are
+The scripts themselves live in `/home/kyubi/Polar/live` on the machine, not in this repository. They are
 copied every night into the private `OpenAliceBackup` repository (see [09 Operations](09-operations.md#backups)).
 They are not stored here because several of them still contain the Telegram bot tokens
 (see [10 Known limits](10-known-limits.md)).

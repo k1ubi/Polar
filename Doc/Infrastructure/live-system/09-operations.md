@@ -29,11 +29,11 @@ Replace the unit name with `polar-regime`, `polar-portfolio`, `polar-audit`, `po
 Running a script by hand without `--live` changes nothing:
 
 ```bash
-python3 /home/kyubi/polar/bin/guardian.py        # prints what it would do
-python3 /home/kyubi/polar/bin/scanner.py         # shows each coin's score, places no order
-python3 /home/kyubi/polar/bin/regime.py --dry
-python3 /home/kyubi/polar/bin/portfolio.py --dry
-python3 /home/kyubi/polar/bin/audit.py --dry
+python3 /home/kyubi/Polar/live/bin/guardian.py        # prints what it would do
+python3 /home/kyubi/Polar/live/bin/scanner.py         # shows each coin's score, places no order
+python3 /home/kyubi/Polar/live/bin/regime.py --dry
+python3 /home/kyubi/Polar/live/bin/portfolio.py --dry
+python3 /home/kyubi/Polar/live/bin/audit.py --dry
 ```
 
 ## Restarting
@@ -58,7 +58,7 @@ There is no command that closes positions in bulk, on purpose.
 
 ## Backups
 
-`polar-backup.timer` runs `/home/kyubi/openalice-backup/backup.sh` every day at 03:00 CAT. It copies:
+`polar-backup.timer` runs `/home/kyubi/Polar/github-backup/backup.sh` every day at 03:00 CAT. It copies:
 
 - OpenAlice configuration, without account keys, login data or the sealing key,
 - OpenAlice's workspaces, including the switched-off agent instructions,
@@ -80,7 +80,7 @@ and OpenAlice login by hand under `~/.openalice/data/config/` and start the serv
 The Monday check sends a Telegram message when a newer stable version exists. To upgrade:
 
 ```bash
-bash ~/polar/bin/upgrade-openalice.sh
+bash ~/Polar/live/bin/upgrade-openalice.sh
 ```
 
 It stops if entry orders are pending, takes a backup, upgrades through npm (this asks for sudo),
@@ -89,15 +89,15 @@ itself if the test fails. It never touches positions or orders.
 
 ## Tests
 
-The tests are in `/home/kyubi/polar/tests/`. They use a fake broker and fake Telegram and a throwaway
+The tests are in `/home/kyubi/Polar/live/tests/`. They use a fake broker and fake Telegram and a throwaway
 state folder, never the real account or the real state.
 
 ```bash
-cd /home/kyubi/polar/tests
-python3 -I stress_guardian.py      # 18 checks
-python3    stress_scanner.py       # 6 checks (needs the user's Python packages, so no -I)
-python3    stress_userbot.py       # 18 checks
-python3 -I stress_decisions.py     # 17 checks
+cd /home/kyubi/Polar/live/tests
+python3 stress_guardian.py      # 18 checks
+python3 stress_scanner.py       # 6 checks
+python3 stress_userbot.py       # 18 checks
+python3 stress_decisions.py     # 17 checks
 ```
 
 Each prints PASS or FAIL per check. Run them after changing `guardian.py`, `scanner.py` or either bot.

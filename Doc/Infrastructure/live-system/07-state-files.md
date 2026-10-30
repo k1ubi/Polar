@@ -1,6 +1,6 @@
 # 07 State files
 
-Folder: `/home/kyubi/polar/state/`. All files are JSON unless noted. Scripts write through a
+Folder: `/home/kyubi/Polar/live/state/`. All files are JSON unless noted. Scripts write through a
 temporary file and rename it, so a reader never sees half a file.
 
 ## Who changes what
@@ -53,6 +53,6 @@ The customer bot reads this file to know what to copy. Older rows have no `type`
 
 | Path | Holds |
 |---|---|
-| `/home/kyubi/polar/customers/customers.json` | Registered customers and their API credentials (file mode 600, not encrypted) |
-| `/home/kyubi/polar/customers/copies.json` | Trades copied for customers |
+| `/home/kyubi/Polar/live/customers/customers.json` | Registered customers and their API credentials (file mode 600, not encrypted) |
+| `/home/kyubi/Polar/live/customers/copies.json` | Trades copied for customers |
 | `/home/kyubi/.openalice/` | OpenAlice's own data: config, the Bitget account credentials (files the backup skips), workspaces, logs |

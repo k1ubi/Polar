@@ -12,7 +12,7 @@ digraph polar {
     ubot [label="polar-user-bot\n@polar_user_bot\ncustomer copy trading", fillcolor="#fbf0d6"];
   }
 
-  state [label="State files (JSON)\n/home/kyubi/polar/state\nwritten under one lock", shape=cylinder, fillcolor="#f5f5f5"];
+  state [label="State files (JSON)\n/home/kyubi/Polar/live/state\nwritten under one lock", shape=cylinder, fillcolor="#f5f5f5"];
 
   subgraph cluster_timers {
     label="Scheduled scripts (systemd timers, plain Python)"; style="rounded"; color="#2f855a"; fontsize=11;
