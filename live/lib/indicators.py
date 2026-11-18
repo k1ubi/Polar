@@ -135,6 +135,15 @@ def compute_scan(exchange, symbols: list) -> dict:
             btc_corr = correlation(btc4h["close"], b4h["close"]) if btc4h is not None else 0.0
             fr = funding_rate(exchange, sym)
 
+            # Weekly EMA-50 as a hard macro filter
+            try:
+                b1w = fetch_bars(exchange, sym, "1w", 60)
+                weekly_ema50 = ema(b1w["close"], 50)
+                weekly_above = float(b1d["close"][-1]) > weekly_ema50
+            except Exception:
+                weekly_ema50 = float(b1d["close"][-1])
+                weekly_above = True  # fail open if weekly data unavailable
+
             result[base] = {
                 "price":           float(b4h["close"][-1]),
                 "rsi_4h":          rsi(b4h["close"], 14),
@@ -145,6 +154,8 @@ def compute_scan(exchange, symbols: list) -> dict:
                 "ema20_4h":        float(ema20_4h_arr[-1]),
                 "ema20_4h_slope":  float(ema20_4h_slope),
                 "ema20_1d":        ema(b1d["close"], 20),
+                "weekly_ema50":    float(weekly_ema50),
+                "weekly_above":    weekly_above,
                 "atr14_4h":        atr(b4h["high"], b4h["low"], b4h["close"], 14),
                 "atr14_15m":       atr(b15["high"], b15["low"], b15["close"], 14),
                 "btc_corr":        btc_corr,

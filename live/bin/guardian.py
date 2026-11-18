@@ -401,27 +401,42 @@ def run():
             sl, short = e["sl_distance_pct"], e["side"] == "SHORT"
             stop = entry * (1 + sl) if short else entry * (1 - sl)
             dp   = max(decimals(e["limit_price"]), 2)
-            tp   = round(entry * (1 - 2 * sl) if short else entry * (1 + 2 * sl), dp)
-            tp_id = None
+
+            # Two-leg TP: TP1 at 1×R (50%), TP2 at 2.5×R (50%)
+            # Use scanner's stored levels if available, otherwise recompute
+            tp1 = round(e.get("tp1_level") or (entry * (1 - sl)       if short else entry * (1 + sl)),       dp)
+            tp2 = round(e.get("tp2_level") or (entry * (1 - 2.5 * sl) if short else entry * (1 + 2.5 * sl)), dp)
+            half_qty = round(qty / 2, 8)
+            tp_action = "BUY" if short else "SELL"
+            tp1_id = tp2_id = None
             try:
-                tp_id = place_tp(aid, "BUY" if short else "SELL", tp, pos["quantity"],
-                                 f"Guardian TP {base} {e['side']} after fill")
+                tp1_id = place_tp(aid, tp_action, tp1, half_qty,
+                                  f"Guardian TP1 {base} {e['side']} 1R")
+                tp2_id = place_tp(aid, tp_action, tp2, half_qty,
+                                  f"Guardian TP2 {base} {e['side']} 2.5R")
             except Exception as ex:
                 tg(f"🚨 <b>TP NOT PLACED</b> | {base} {e['side']} filled @ {entry} "
-                   f"but the TP order failed: {ex}")
+                   f"but TP orders failed: {ex}")
             opens[f"{base}_{int(now().timestamp())}"] = {
                 "symbol": e["symbol"], "side": e["side"], "entry_price": entry, "qty": qty,
-                "stop_level": stop, "tp_level": tp, "sl_distance_pct": sl,
-                "atr14_15m": e.get("atr14_15m"), "ema20_4h": e.get("ema20_4h"),
+                "stop_level": stop, "tp1_level": tp1, "tp2_level": tp2,
+                "tp_level": tp2,  # backward-compat alias for trailing/close logic
+                "sl_distance_pct": sl,
+                "atr14_4h": e.get("atr14_4h"), "atr14_15m": e.get("atr14_15m"),
+                "ema20_4h": e.get("ema20_4h"), "ema20_1d": e.get("ema20_1d"),
                 "score": e.get("score"), "regime": e.get("regime"),
-                "entered_at": z(), "tp_order_id": tp_id, "partial_tp_done": False,
+                "entered_at": z(), "tp1_order_id": tp1_id, "tp2_order_id": tp2_id,
+                "tp_order_id": tp2_id,  # backward-compat alias
+                "partial_tp_done": False, "breakeven": False,
             }
             pend.pop(key)
             append_signal({"type": "entry", "symbol": e["symbol"], "side": e["side"],
                            "entry_price": entry, "qty": qty, "score": e.get("score"),
                            "regime": e.get("regime"), "entered_at": z(),
-                           "stop_level": stop, "tp_level": tp, "sl_distance_pct": sl})
-            tg(f"✅ <b>FILLED</b> | {base} {e['side']} @ ${entry} | TP ${tp} | stop watch ${stop:.6g}")
+                           "stop_level": stop, "tp1_level": tp1, "tp2_level": tp2,
+                           "sl_distance_pct": sl})
+            tg(f"✅ <b>FILLED</b> | {base} {e['side']} @ ${entry}\n"
+               f"TP1: ${tp1} [1R, 50%] | TP2: ${tp2} [2.5R, 50%] | stop watch ${stop:.6g}")
             changed = True
         elif not resting:
             log(f"entry gone {base}: remove from pending")
@@ -451,16 +466,17 @@ def run():
         bpos  = on_broker.get((aid, side.lower()))
         if not bpos:
             fill = closing_fill(aid, side, p.get("entered_at") or "1970-01-01T00:00:00Z")
+            tp_ids = {str(p.get("tp_order_id")), str(p.get("tp1_order_id")), str(p.get("tp2_order_id"))} - {"None"}
+            tp2 = p.get("tp2_level") or p.get("tp_level", p["entry_price"])
             if fill:
                 exit_price, oid = fill
-                tp_hit = str(oid) == str(p.get("tp_order_id")) or \
-                    abs(exit_price - p["tp_level"]) / p["tp_level"] <= 0.002
+                tp_hit = str(oid) in tp_ids or abs(exit_price - tp2) / tp2 <= 0.002
                 outcome = "TP_HIT" if tp_hit else "CLOSED_EXTERNAL"
             else:
                 mp = float(rj("last-prices.json", {}).get(base, p["entry_price"]))
-                tp_hit = mp <= p["tp_level"] * 1.001 if short else mp >= p["tp_level"] * 0.999
+                tp_hit = mp <= tp2 * 1.001 if short else mp >= tp2 * 0.999
                 outcome = "TP_HIT" if tp_hit else "CLOSED_UNKNOWN"
-                exit_price = p["tp_level"] if tp_hit else mp
+                exit_price = tp2 if tp_hit else mp
             pnl = record_close(p, exit_price, outcome)
             try:
                 cancel_leftovers(aid, base)
@@ -513,6 +529,17 @@ def run():
                      and o["action"] == ("BUY" if short else "SELL")]
         if not tp_orders:
             log(f"WARNING {base}: no TP order resting")
+
+        # Detect TP1 fill: exchange executed reduce-only TP1, position shrank to ~50%
+        broker_qty = float(bpos.get("quantity", p["qty"]))
+        if (not p.get("partial_tp_done") and p.get("tp1_order_id")
+                and broker_qty < p["qty"] * 0.75):
+            p["partial_tp_done"] = True
+            p["breakeven_done"] = True
+            p["stop_level"] = p["entry_price"]  # hard breakeven after first TP
+            p["qty"] = broker_qty  # update tracked qty to remaining size
+            tg(f"🎯 <b>TP1 HIT</b> | {base} {side} | 50% position closed at ~${p.get('tp1_level', '?'):.6g}\n"
+               f"Stop moved to breakeven (${p['entry_price']:.6g}). Runner targets ${p.get('tp2_level', '?'):.6g}.")
         breach = price >= stop if short else price <= stop
         shift  = (not short and regime == "BEARISH") or (short and regime == "BULLISH")
         if breach:
@@ -538,7 +565,9 @@ def run():
                     tg(f"📈 <b>TRAIL</b> | {base} | stop ${cur:.6g} -> ${p['stop_level']:.6g}")
                     p["last_trail_notice_stop"] = p["stop_level"]
                 changed = True
-        if favour >= sl and not p.get("partial_tp_done") and base not in requests:
+        # Skip manual partial request when exchange-side TP1 order is handling it
+        if (favour >= sl and not p.get("partial_tp_done") and base not in requests
+                and not p.get("tp1_order_id")):
             half = partial_qty(p["symbol"], float(bpos["quantity"]))
             if half:
                 request_close(base, side, "partial_1R", price, entry, upnl, requests, qty=half)

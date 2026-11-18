@@ -129,7 +129,20 @@ def score(m):
     p, e4h, e1d = m["price"], m["ema20_4h"], m["ema20_1d"]
     slope = m["ema20_4h_slope"]  # positive = EMA rising, negative = falling
 
-    # Direction: price vs both 4h and daily EMA-20
+    # Weekly macro filter: never fight the weekly EMA-50
+    # This eliminates the biggest drawdowns — trading with the highest-timeframe trend
+    if not m.get("weekly_above", True):
+        # Price below weekly EMA-50 → only shorts allowed
+        if p < e4h and p < e1d:
+            pts = (2 * (38 <= m["rsi_4h"] <= 58)
+                   + 2 * (slope < -0.001)
+                   + 2 * (-0.3 <= m["z8_4h"] <= 1.5)
+                   + (m["rvol_4h"] >= 1.3)
+                   + (m["funding_rate"] >= -0.0003))
+            return "SHORT", pts
+        return None, 0  # weekly bearish, no longs
+
+    # Weekly bullish (or unknown) — both directions allowed from 4h/daily
     if p > e4h and p > e1d:
         pts = (2 * (42 <= m["rsi_4h"] <= 62)
                + 2 * (slope > 0.001)
@@ -147,7 +160,7 @@ def score(m):
     return None, 0  # price between 4h and daily EMA — no clear trend
 
 
-def review(base, d, pts, m, regime, equity, qty, price, sl, stop, tp, open_view, headlines):
+def review(base, d, pts, m, regime, equity, qty, price, sl, stop, tp1, tp2, open_view, headlines):
     """Sonnet second opinion on a shortlisted entry. Fails closed."""
     risk_pct = qty * price * sl / equity * 100
     prompt = (
@@ -157,7 +170,8 @@ def review(base, d, pts, m, regime, equity, qty, price, sl, stop, tp, open_view,
         f"wrong: a trade against the real situation, news risk, oversized risk, correlation with open "
         f"positions, a setup that passes the score but looks like a trap. You cannot change the order.\n\n"
         f"Proposed: {d} {base}/USDT, limit entry {price}, qty {qty}, notional ${qty*price:.2f}\n"
-        f"Equity ${equity:.2f}; risk if stopped out {risk_pct:.2f}% of equity; stop {stop:.6g}; TP {tp:.6g}\n"
+        f"Equity ${equity:.2f}; risk if stopped out {risk_pct:.2f}% of equity; stop {stop:.6g}; "
+        f"TP1 {tp1:.6g} [1R, 50%], TP2 {tp2:.6g} [2.5R, 50%]\n"
         f"Score {pts}/8; RSI(4h) {m['rsi_4h']:.0f}, RSI(1h) {m['rsi_1h']:.0f}, "
         f"z8(4h) {m['z8_4h']:.2f}, EMA-20 slope {m['ema20_4h_slope']*100:.2f}%,\n"
         f"rvol(4h) {m['rvol_4h']:.2f}, funding {m['funding_rate']*100:.4f}%/8h, "
@@ -261,11 +275,14 @@ def main():
             continue
         short = d == "SHORT"
         stop  = price_f * (1 + sl) if short else price_f * (1 - sl)
-        tp    = price_f * (1 - 2 * sl) if short else price_f * (1 + 2 * sl)
+        # Two-leg TP: 50% at 1×R (book profits), 50% at 2.5×R (let winner run)
+        tp1   = price_f * (1 - sl)       if short else price_f * (1 + sl)
+        tp2   = price_f * (1 - 2.5 * sl) if short else price_f * (1 + 2.5 * sl)
         action = "SELL" if short else "BUY"
         risk_pct = qty * price_f * sl / equity * 100
         log(f"ENTRY {s} {d} score {pts}/8: {action} LMT {qty_s} @ {price_s} "
-            f"(sl {sl*100:.2f}%, risk {risk_pct:.2f}%, tp {tp:.6g}, stop watch {stop:.6g})")
+            f"(sl {sl*100:.2f}%, risk {risk_pct:.2f}%, "
+            f"tp1 {tp1:.6g} [1R], tp2 {tp2:.6g} [2.5R], stop watch {stop:.6g})")
         if risk_pct > 2.0:
             log(f"{s}: skipped, risk {risk_pct:.2f}% above 2% cap after lot rounding")
             append({"type": "skipped", "symbol": sym, "reason": f"risk_{risk_pct:.1f}pct", "entered_at": z()})
@@ -275,7 +292,7 @@ def main():
         open_view = "; ".join(
             f"{v['side']} {v['symbol'].split('/')[0]}"
             for v in list(opens.values()) + list(pend.values()))
-        ok, why = review(s, d, pts, m, regime, equity, qty, price_f, sl, stop, tp, open_view, [])
+        ok, why = review(s, d, pts, m, regime, equity, qty, price_f, sl, stop, tp1, tp2, open_view, [])
         log(f"{s}: reviewer {'APPROVE' if ok else 'VETO'}: {why}")
         if not ok:
             append({"type": "skipped", "symbol": sym, "reason": "reviewer_veto", "detail": why, "entered_at": z()})
@@ -293,6 +310,7 @@ def main():
             "stop_level": stop, "tp_level": tp, "sl_distance_pct": sl,
             "atr14_4h": atr14, "atr14_15m": m["atr14_15m"], "ema20_4h": m["ema20_4h"],
             "ema20_1d": m["ema20_1d"], "btc_corr": m["btc_corr"],
+            "tp1_level": tp1, "tp2_level": tp2,
             "score": pts, "regime": regime, "order_id": order_id, "placed_at": z(),
         }
         commit("pending-orders.json", {k: v for k, v in pend.items() if k != key}, pend)
@@ -300,7 +318,7 @@ def main():
                 "qty": qty, "score": pts, "regime": regime, "placed_at": z()})
         free -= qty * price_f / LEVERAGE
         tg(f"{'🔴' if short else '🟢'} <b>ENTRY ORDER</b> | {s}/USDT | {d}\n"
-           f"Limit: ${price_s} | planned TP: ${tp:.6g} | stop watch: ${stop:.6g}\n"
+           f"Limit: ${price_s} | TP1: ${tp1:.6g} [1R] | TP2: ${tp2:.6g} [2.5R] | stop watch: ${stop:.6g}\n"
            f"Score: {pts}/8 | RSI(4h): {m['rsi_4h']:.0f} | z8(4h): {m['z8_4h']:.2f} | "
            f"slope: {m['ema20_4h_slope']*100:.2f}% | rvol: {m['rvol_4h']:.2f}x\n"
            f"ATR(4h) SL: {sl*100:.2f}% | Regime: {regime} | Reviewer: {why}\nwaiting for fill")
