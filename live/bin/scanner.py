@@ -113,16 +113,38 @@ def gates():
 
 
 def score(m):
-    p, e = m["price"], m["ema20_4h"]
-    if p == e:
-        return None, 0
-    if p > e:
-        pts = (2 * (50 <= m["rsi_15m"] <= 70) + 2 * (48 <= m["rsi_1h"] <= 68)
-               + 2 * (-0.5 <= m["z8_15m"] <= 1.5) + (m["z20_1h"] > 0) + (m["rvol"] >= 1.4))
+    """4h/daily trend-following score (max 8).
+
+    Strategy: buy pullbacks to the 4h EMA-20 when the daily trend is up;
+    short bounces when daily trend is down. Hold 1-3 days. Never trade
+    against the daily EMA-20 slope.
+
+    Points breakdown (LONG example):
+      +2  4h RSI 42-62  — pulled back from overbought, not yet oversold
+      +2  daily EMA-20 slope positive  — macro trend intact
+      +2  4h z-score -1.5 to +0.3  — mild pullback, not too extended
+      +1  4h rvol >= 1.3  — volume expanding on the move
+      +1  funding rate <= 0.0003  — not paying excessive funding (< 1.3%/day)
+    """
+    p, e4h, e1d = m["price"], m["ema20_4h"], m["ema20_1d"]
+    slope = m["ema20_4h_slope"]  # positive = EMA rising, negative = falling
+
+    # Direction: price vs both 4h and daily EMA-20
+    if p > e4h and p > e1d:
+        pts = (2 * (42 <= m["rsi_4h"] <= 62)
+               + 2 * (slope > 0.001)
+               + 2 * (-1.5 <= m["z8_4h"] <= 0.3)
+               + (m["rvol_4h"] >= 1.3)
+               + (m["funding_rate"] <= 0.0003))
         return "LONG", pts
-    pts = (2 * (30 <= m["rsi_15m"] <= 50) + 2 * (32 <= m["rsi_1h"] <= 52)
-           + 2 * (-1.5 <= m["z8_15m"] <= 0.5) + (m["z20_1h"] < 0) + (m["rvol"] >= 1.4))
-    return "SHORT", pts
+    if p < e4h and p < e1d:
+        pts = (2 * (38 <= m["rsi_4h"] <= 58)
+               + 2 * (slope < -0.001)
+               + 2 * (-0.3 <= m["z8_4h"] <= 1.5)
+               + (m["rvol_4h"] >= 1.3)
+               + (m["funding_rate"] >= -0.0003))
+        return "SHORT", pts
+    return None, 0  # price between 4h and daily EMA — no clear trend
 
 
 def review(base, d, pts, m, regime, equity, qty, price, sl, stop, tp, open_view, headlines):
@@ -136,10 +158,11 @@ def review(base, d, pts, m, regime, equity, qty, price, sl, stop, tp, open_view,
         f"positions, a setup that passes the score but looks like a trap. You cannot change the order.\n\n"
         f"Proposed: {d} {base}/USDT, limit entry {price}, qty {qty}, notional ${qty*price:.2f}\n"
         f"Equity ${equity:.2f}; risk if stopped out {risk_pct:.2f}% of equity; stop {stop:.6g}; TP {tp:.6g}\n"
-        f"Score {pts}/8; RSI15m {m['rsi_15m']:.0f}, RSI1h {m['rsi_1h']:.0f}, "
-        f"z8(15m) {m['z8_15m']:.2f}, z20(1h) {m['z20_1h']:.2f},\n"
-        f"rvol {m['rvol']:.2f}, price vs 4h EMA20 {m['price']:.6g}/{m['ema20_4h']:.6g}, "
-        f"ATR15m {m['atr14_15m']:.6g}, BTC corr {m['btc_corr']:.2f}\n"
+        f"Score {pts}/8; RSI(4h) {m['rsi_4h']:.0f}, RSI(1h) {m['rsi_1h']:.0f}, "
+        f"z8(4h) {m['z8_4h']:.2f}, EMA-20 slope {m['ema20_4h_slope']*100:.2f}%,\n"
+        f"rvol(4h) {m['rvol_4h']:.2f}, funding {m['funding_rate']*100:.4f}%/8h, "
+        f"price/4h-EMA20/1d-EMA20 {m['price']:.6g}/{m['ema20_4h']:.6g}/{m['ema20_1d']:.6g}, "
+        f"ATR(4h) {m['atr14_4h']:.6g}, BTC corr {m['btc_corr']:.2f}\n"
         f"Market regime: {regime}\n"
         f"Open/pending positions: {open_view or 'none'}\n"
         f"Headlines: {headlines or 'none'}\n\n"
@@ -199,8 +222,9 @@ def main():
     for s, m in results.items():
         d, pts = score(m)
         log(f"{s}: {d} {pts}/8 "
-            f"(rsi15 {m['rsi_15m']:.0f}, rsi1h {m['rsi_1h']:.0f}, "
-            f"z8 {m['z8_15m']:.2f}, rvol {m['rvol']:.2f})")
+            f"(rsi4h {m['rsi_4h']:.0f}, slope {m['ema20_4h_slope']*100:.2f}%, "
+            f"z8_4h {m['z8_4h']:.2f}, rvol {m['rvol_4h']:.2f}, "
+            f"fr {m['funding_rate']*100:.4f}%)")
         if d == allowed and pts >= 7:
             cands.append((pts, s, d, m))
     cands.sort(key=lambda c: -c[0])
@@ -223,8 +247,10 @@ def main():
 
     for pts, s, d, m in picks:
         sym = f"{s}/USDT:USDT"
-        price, atr14 = m["price"], m["atr14_15m"]
-        sl = min(max(atr14 * 1.5 / price, 0.005), 0.015)
+        price = m["price"]
+        # Use 4h ATR for stop distance — appropriate for 1-3 day holds
+        atr14 = m["atr14_4h"]
+        sl = min(max(atr14 * 1.5 / price, 0.015), 0.06)
         risk_usd = equity * 0.015
         qty = min(risk_usd / (price * sl), (free * 0.8 * LEVERAGE) / price)
         qty_s   = ex.amount_to_precision(sym, qty)
@@ -265,7 +291,8 @@ def main():
         pend[key] = {
             "symbol": sym, "side": d, "limit_price": price_f, "qty": qty,
             "stop_level": stop, "tp_level": tp, "sl_distance_pct": sl,
-            "atr14_15m": atr14, "ema20_4h": m["ema20_4h"], "btc_corr": m["btc_corr"],
+            "atr14_4h": atr14, "atr14_15m": m["atr14_15m"], "ema20_4h": m["ema20_4h"],
+            "ema20_1d": m["ema20_1d"], "btc_corr": m["btc_corr"],
             "score": pts, "regime": regime, "order_id": order_id, "placed_at": z(),
         }
         commit("pending-orders.json", {k: v for k, v in pend.items() if k != key}, pend)
@@ -274,9 +301,9 @@ def main():
         free -= qty * price_f / LEVERAGE
         tg(f"{'🔴' if short else '🟢'} <b>ENTRY ORDER</b> | {s}/USDT | {d}\n"
            f"Limit: ${price_s} | planned TP: ${tp:.6g} | stop watch: ${stop:.6g}\n"
-           f"Score: {pts}/8 | RSI(15m): {m['rsi_15m']:.0f} | z8: {m['z8_15m']:.2f} | "
-           f"rvol: {m['rvol']:.2f}x\n"
-           f"ATR SL: {sl*100:.2f}% | Regime: {regime} | Reviewer: {why}\nwaiting for fill")
+           f"Score: {pts}/8 | RSI(4h): {m['rsi_4h']:.0f} | z8(4h): {m['z8_4h']:.2f} | "
+           f"slope: {m['ema20_4h_slope']*100:.2f}% | rvol: {m['rvol_4h']:.2f}x\n"
+           f"ATR(4h) SL: {sl*100:.2f}% | Regime: {regime} | Reviewer: {why}\nwaiting for fill")
         if free < 15:
             break
 

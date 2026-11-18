@@ -84,37 +84,71 @@ def correlation(a: np.ndarray, b: np.ndarray) -> float:
 
 # ── composite computations ────────────────────────────────────────────────────
 
+def ema_array(close: np.ndarray, period: int) -> np.ndarray:
+    """Return full EMA array (same length as close)."""
+    close = close.astype(float)
+    k = 2.0 / (period + 1)
+    out = np.empty_like(close)
+    out[0] = close[0]
+    for i in range(1, len(close)):
+        out[i] = close[i] * k + out[i - 1] * (1.0 - k)
+    return out
+
+
+def funding_rate(exchange, symbol: str) -> float:
+    """Fetch current funding rate for symbol. Returns 0.0 on failure."""
+    try:
+        fr = exchange.fetch_funding_rate(symbol)
+        return float(fr.get("fundingRate", 0.0))
+    except Exception:
+        return 0.0
+
+
 def compute_scan(exchange, symbols: list) -> dict:
     """Compute all scan metrics for a list of BASE symbols.
 
-    Returns {BASE: {price, rsi_15m, rsi_1h, z8_15m, z20_1h, rvol,
-                     ema20_4h, atr14_15m, btc_corr}}
-    Symbols that fail (no data, rate-limited) are silently omitted.
+    4h/daily strategy metrics returned per symbol:
+    {price, rsi_4h, rsi_1h, z8_4h, z20_4h, ema20_4h, ema20_4h_slope,
+     ema20_1d, atr14_4h, atr14_15m, rvol_4h, btc_corr, funding_rate}
+
+    Symbols that fail are silently omitted.
     """
     result = {}
     try:
-        btc15 = fetch_bars(exchange, "BTC/USDT:USDT", "15m", 50)
+        btc4h = fetch_bars(exchange, "BTC/USDT:USDT", "4h", 60)
     except Exception as e:
         print(f"indicators: BTC bars failed: {e}", file=sys.stderr)
-        btc15 = None
+        btc4h = None
 
     for base in symbols:
         sym = f"{base}/USDT:USDT"
         try:
             b15 = fetch_bars(exchange, sym, "15m", 50)
             b1h = fetch_bars(exchange, sym, "1h",  50)
-            b4h = fetch_bars(exchange, sym, "4h",  30)
-            btc_corr = correlation(btc15["close"], b15["close"]) if btc15 is not None else 0.0
+            b4h = fetch_bars(exchange, sym, "4h",  60)
+            b1d = fetch_bars(exchange, sym, "1d",  30)
+
+            ema20_4h_arr  = ema_array(b4h["close"], 20)
+            slope_lookback = 5  # ~20 hours
+            ema20_4h_slope = (ema20_4h_arr[-1] - ema20_4h_arr[-1 - slope_lookback]) / ema20_4h_arr[-1]
+
+            btc_corr = correlation(btc4h["close"], b4h["close"]) if btc4h is not None else 0.0
+            fr = funding_rate(exchange, sym)
+
             result[base] = {
-                "price":      float(b15["close"][-1]),
-                "rsi_15m":    rsi(b15["close"], 14),
-                "rsi_1h":     rsi(b1h["close"], 14),
-                "z8_15m":     zscore(b15["close"], 8),
-                "z20_1h":     zscore(b1h["close"], 20),
-                "rvol":       rvol(b15["volume"], 20),
-                "ema20_4h":   ema(b4h["close"], 20),
-                "atr14_15m":  atr(b15["high"], b15["low"], b15["close"], 14),
-                "btc_corr":   btc_corr,
+                "price":           float(b4h["close"][-1]),
+                "rsi_4h":          rsi(b4h["close"], 14),
+                "rsi_1h":          rsi(b1h["close"], 14),
+                "z8_4h":           zscore(b4h["close"], 8),
+                "z20_4h":          zscore(b4h["close"], 20),
+                "rvol_4h":         rvol(b4h["volume"], 20),
+                "ema20_4h":        float(ema20_4h_arr[-1]),
+                "ema20_4h_slope":  float(ema20_4h_slope),
+                "ema20_1d":        ema(b1d["close"], 20),
+                "atr14_4h":        atr(b4h["high"], b4h["low"], b4h["close"], 14),
+                "atr14_15m":       atr(b15["high"], b15["low"], b15["close"], 14),
+                "btc_corr":        btc_corr,
+                "funding_rate":    fr,
             }
         except Exception as e:
             print(f"indicators.scan {base}: {e}", file=sys.stderr)
@@ -122,11 +156,13 @@ def compute_scan(exchange, symbols: list) -> dict:
 
 
 def compute_atr_map(exchange, bases: list) -> dict:
-    """Return {BASE: atr14_15m} for open-position ATR trailing."""
+    """Return {BASE: atr14_4h} for open-position ATR trailing.
+    4h ATR is more stable than 15m for multi-day hold positions.
+    """
     result = {}
     for base in bases:
         try:
-            b = fetch_bars(exchange, f"{base}/USDT:USDT", "15m", 30)
+            b = fetch_bars(exchange, f"{base}/USDT:USDT", "4h", 30)
             result[base] = atr(b["high"], b["low"], b["close"], 14)
         except Exception as e:
             print(f"indicators.atr_map {base}: {e}", file=sys.stderr)

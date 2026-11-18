@@ -428,7 +428,8 @@ def run():
             append_signal({"type": "skipped", "symbol": e["symbol"], "reason": "entry_not_open"})
             pend.pop(key)
             changed = True
-        elif now() - parse(e["placed_at"]) > timedelta(minutes=45):
+        elif now() - parse(e["placed_at"]) > timedelta(hours=24):
+            # 4h/daily strategy: entries are limit orders near EMA — give them 24h to fill
             cancel(e["order_id"], symbol_of(aid), f"Guardian cancel stale entry {base}")
             append_signal({"type": "skipped", "symbol": e["symbol"], "reason": "entry_expired"})
             pend.pop(key)
