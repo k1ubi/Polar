@@ -1,127 +1,173 @@
-<div align="center">
+# Polar
 
-<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0d0221,50:2b0a3d,100:1a1a2e&height=200&section=header&text=POLAR&fontSize=80&fontColor=05D9E8&fontAlignY=38&animation=fadeIn&desc=north%20star%20trading%20system&descAlignY=58&descSize=18&descColor=FF2079" alt="POLAR" />
+Automated cryptocurrency futures trading system running on Bitget USDT-M perpetuals.
 
-[![Typing SVG](https://readme-typing-svg.demolab.com/?font=Orbitron&size=20&duration=3000&pause=800&color=05D9E8&background=00000000&center=true&vCenter=true&width=750&lines=NORTH+STAR+TRADING+SYSTEM;MODULAR+%2F%2F+SWAPPABLE+%2F%2F+STRATEGY-AGNOSTIC;PHASE%3A+LIVE+--+WEEKEND_HUNTER+ACTIVE)](https://github.com/k1ubi/Polar)
+Polar is a rule-based, multi-agent system: a scanner shortlists entries, a Sonnet reviewer vetoes bad setups, a guardian monitors open positions, and an AI regime agent classifies the macro environment. No position is ever closed without explicit Telegram approval from the owner.
 
-![status](https://img.shields.io/badge/STATUS-LIVE-00fff9?style=for-the-badge&labelColor=0d0221)
-![phase](https://img.shields.io/badge/PHASE-ACTIVE-ff2079?style=for-the-badge&labelColor=0d0221)
-![core](https://img.shields.io/badge/CORE-WEEKEND__HUNTER-f6019d?style=for-the-badge&labelColor=0d0221)
-![access](https://img.shields.io/badge/ACCESS-PRIVATE-05d9e8?style=for-the-badge&labelColor=0d0221)
+---
 
-</div>
-
-<br>
+## Architecture
 
 ```
-                            *
-                          \ | /
-                      -----✦-----   N
-                          / | \
-                            *
+scanner.py     (every 15 min)   → scans 20 perps, scores setups, places ENTRY limit orders
+guardian.py    (every 5 min)    → watches open positions: cancel stale entries, place TP,
+                                   trailing, send close-approval requests to Telegram
+portfolio.py   (every 15 min)   → equity history, 10% drawdown circuit breaker,
+                                   delta & BTC-correlation advisory
+regime.py      (every 1 h)      → BTC 4h/1d trend + futures basis + options skew → regime.json
+audit.py       (daily)          → cross-checks state files against broker; Sonnet explains issues
+
+polar-bot.py                    → Lorenzo's Telegram control bot (@polar_aibot)
+polar-user-bot.py               → customer copy-trading bot (@polar_user_bot)
+
+lib/broker.py                   → ccxt Bitget USDT-M wrapper
+lib/indicators.py               → pure-numpy RSI, EMA, ATR, z-score, rvol, correlation
+lib/config.py                   → loads live/.env, exposes TG_TOKEN / TG_CHAT
 ```
 
-## `// 0x00` IDENTITY
+State is stored as JSON files in `live/state/`. Everything is append-only or atomic-replace; no database required.
 
-Polar is named for its north pole: the strategy it follows. Every other part
-of the system exists to serve that one needle — trade signals, execution,
-documentation — and, like a compass, the needle can be swapped without
-touching the instrument around it.
+---
 
-```ansi
-[36;1mPOLAR-OS v0.1 :: boot sequence[0m
-[32m[ OK ][0m Core/vpa/             mounted
-[32m[ OK ][0m Core/weekend_hunter/  mounted, daemon + telegram_bot live
-[32m[ OK ][0m Core/Library/         mounted (shared infra: candlestick_trend, positions, telegram, indicators)
-[32m[ OK ][0m Doc/Infrastructure/   mounted
-[32m[ OK ][0m Doc/Core/             mounted
-[32m[ OK ][0m Doc/Library/          mounted
+## Safety rules
+
+- **No close without approval.** `execute_approved()` in guardian.py is the only place a position is closed. It fires only when the symbol appears in `close-approvals.json`, written exclusively by Lorenzo's Telegram tap. Regime flips, 1R partials, and stop events all create an *approval request* — silence is never approval.
+- **No Bitget plan orders.** `--order-type STP` and `--stop-loss` both map to Bitget plan orders that open opposite-side positions when no matching position exists. Never use them.
+- **Leverage capped at 3×.** Configured in `LEVERAGE = 3` in scanner.py and on the Bitget account itself.
+- **10% drawdown circuit breaker.** portfolio.py halts new entries automatically; resets after 12 h.
+- **Sonnet review gate.** Every shortlisted entry passes through `review()` in scanner.py before an order is placed. The reviewer can VETO on news risk, correlation, or bad setup.
+
+---
+
+## Repository layout
+
 ```
-
-## `// 0x01` ARCHITECTURE
-
-Polar has exactly one moving part: **which Core is loaded.** Everything else
-is built not to care which strategy is running underneath it.
-
-```text
-$ tree -L 2
-.
-├── Core/
-│   ├── vpa/                 # Volume Price Analysis (Anna Coulling's method)
-│   ├── weekend_hunter/       # Weekend Hunter Ultimate v6.2 port -- LIVE (daemon + telegram bot)
-│   └── Library/              # shared infra, not a strategy: candlestick_trend, positions, telegram, indicators
+Polar/
+├── live/
+│   ├── .env.example        # copy to .env, fill in credentials — NEVER commit .env
+│   ├── bin/                # runnable scripts (scanner, guardian, portfolio, regime, audit)
+│   ├── lib/                # shared modules (broker, indicators, config)
+│   ├── bot/                # Telegram bots
+│   ├── state/              # runtime JSON (gitignored)
+│   ├── tests/              # stress harnesses
+│   └── tools/              # one-off maintenance scripts
 ├── Doc/
-│   ├── Infrastructure/      # infra diagrams, tech stack, infra docs
-│   ├── Core/                # per-core docs: how it works, strategy, pros/cons
-│   └── Library/              # docs for shared infrastructure
-├── README.md
-├── requirements.txt
-└── .gitignore
+│   └── Infrastructure/live-system/   # architecture docs and diagrams
+└── github-backup/          # OpenAlice issue snapshots (gitignored — contains old tokens)
 ```
 
-| Module | Role |
-|---|---|
-| `Core/` | Every strategy Polar has run, saved as its own subfolder. Exactly one drives live trading at a time. |
-| `Core/Library/` | Shared infrastructure other Cores depend on — never a strategy on its own. |
-| `Core/Library/broker.py` | Venue-agnostic order execution — swappable exchange, same as the swappable needle. |
-| `Doc/Infrastructure/` | Diagrams, tech stack, infrastructure documentation. |
-| `Doc/Core/` | Per-Core documentation — mechanism, strategy, pros/cons. |
-| `Doc/Library/` | Documentation for shared infrastructure. |
+---
 
-## `// 0x02` CORE PROTOCOL
+## Setup
 
-> Switching strategies means switching which `Core/` subfolder is active —
-> not rewriting the system around it.
-
-```text
-$ ls Core/
-Library/  vpa/  weekend_hunter/
-```
-
-## `// 0x03` EXECUTION
-
-> Polar can place real orders on Bitget USDT-M futures. It does not, unless
-> told to.
-
-`POLAR_LIVE_TRADING` in `.env` gates everything: unset or unrecognized means
-signal-only (the default, and how every Core has run to date), `dry-run`
-logs real sizing without sending, `true` arms it. Stops and targets are
-attached at the exchange with the entry order — the 300s poll loop is a
-reconciler, not the thing standing between a position and a loss.
+### 1. Prerequisites
 
 ```bash
-touch Core/weekend_hunter/data/HALT                  # stop opening
-python3 -m Core.weekend_hunter.execution --flatten   # close everything now
-python3 -m Core.weekend_hunter.execution --status    # mode, equity, halt state
+pip install ccxt python-telegram-bot aiohttp numpy
 ```
 
-Full detail, including the margin-vs-notional resolution and the failure
-matrix: [`Doc/Infrastructure/execution.md`](./Doc/Infrastructure/execution.md).
+### 2. Credentials
 
-## `// 0x04` STATUS
+```bash
+cp live/.env.example live/.env
+```
 
-| Field | Value |
-|---|---|
-| Repo phase | `LIVE` |
-| Active Core | `weekend_hunter` (daemon + telegram bot) |
-| Execution | `Bitget USDT-M futures` — built, tested, **not yet armed** |
-| Trades placed | `0` — weekend-gated, and no live order has ever been sent |
-| Cores built | `2` (`vpa`, `weekend_hunter`) + 1 shared library (`candlestick_trend`) |
-| Docs populated | `5` |
+Edit `live/.env`:
 
-## `// 0x05` DOCS
+```
+TG_BOT_TOKEN=<your @polar_aibot token from @BotFather>
+TG_CHAT_ID=<your Telegram numeric user ID>
+TG_USER_BOT_TOKEN=<your @polar_user_bot token>  # only needed for copy-trading
 
-- [`Doc/Infrastructure/execution.md`](./Doc/Infrastructure/execution.md) — live order execution, kill switch, failure modes
-- [`Doc/Infrastructure/`](./Doc/Infrastructure) — infra diagrams, tech stack, infra docs
-- [`Doc/Core/`](./Doc/Core) — how each Core works, its strategy, pros/cons
-- [`Doc/Library/`](./Doc/Library) — shared infrastructure (candlestick_trend, positions, telegram, indicators)
+BITGET_API_KEY=<Bitget API key>
+BITGET_SECRET=<Bitget API secret>
+BITGET_PASSPHRASE=<Bitget API passphrase>
+```
 
-<br>
+Bitget API key requires **Read + Trade (Futures)** scopes only — no withdrawal permission.
 
-<div align="center">
+### 3. Bitget account
 
-<img src="https://capsule-render.vercel.app/api?type=waving&color=0:1a1a2e,50:2b0a3d,100:0d0221&height=120&section=footer" alt="" />
+- Set account leverage to **3×** (cross-margin, USDT-M perpetuals)
+- Minimum recommended free margin: **$50**
 
-![footer-typing](https://readme-typing-svg.demolab.com/?font=Fira+Code&size=14&duration=1500&pause=500&color=05D9E8&background=00000000&center=true&vCenter=true&width=320&lines=%3E+connection+maintained_)
+### 4. State directory
 
-</div>
+```bash
+mkdir -p live/state
+echo '{}' > live/state/open-positions.json
+echo '{}' > live/state/pending-orders.json
+echo '{"paused": true}' > live/state/pause.json
+echo '{"halted": false}' > live/state/circuit-breaker.json
+```
+
+### 5. Start the bots
+
+```bash
+# Control bot (keep running in background / systemd)
+python3 live/bot/polar-bot.py
+
+# Then resume via Telegram /resume command, or:
+echo '{"paused": false}' > live/state/pause.json
+```
+
+---
+
+## Running manually
+
+All scripts are safe to run dry (no orders placed, no Telegram sent):
+
+```bash
+python3 live/bin/scanner.py              # dry-run: prints scores, places nothing
+python3 live/bin/scanner.py --live       # live: places ENTRY limit orders
+
+python3 live/bin/guardian.py             # checks open positions, sends Telegram approvals
+python3 live/bin/guardian.py --live      # same, but executes approved closes
+
+python3 live/bin/portfolio.py --dry      # equity snapshot, no writes
+python3 live/bin/regime.py --dry         # regime score, no writes
+python3 live/bin/audit.py --dry          # state/broker comparison, no Telegram
+```
+
+---
+
+## Scheduled jobs (cron / systemd timers)
+
+| Job | Schedule | Command |
+|-----|----------|---------|
+| Scanner | Every 15 min | `python3 live/bin/scanner.py --live` |
+| Guardian | Every 5 min | `python3 live/bin/guardian.py --live` |
+| Portfolio | Every 15 min | `python3 live/bin/portfolio.py` |
+| Regime | Every 1 h | `python3 live/bin/regime.py` |
+| Audit | Daily 06:00 UTC | `python3 live/bin/audit.py` |
+
+---
+
+## Contributing
+
+1. Fork the repo and create a feature branch.
+2. Run the stress tests before opening a PR:
+   ```bash
+   python3 live/tests/harness.py
+   python3 live/tests/stress_scanner.py
+   python3 live/tests/stress_guardian.py
+   ```
+3. Never commit `live/.env` or any file containing real API keys or Telegram tokens.
+4. The guardian's close-approval rule is a hard invariant — do not add any code path that calls `close_position()` outside of `execute_approved()`.
+
+---
+
+## Documentation
+
+Detailed architecture documentation is in [`Doc/Infrastructure/live-system/`](Doc/Infrastructure/live-system/README.md):
+
+- [01 — Overview](Doc/Infrastructure/live-system/01-overview.md)
+- [02 — Architecture](Doc/Infrastructure/live-system/02-architecture.md)
+- [03 — Strategy](Doc/Infrastructure/live-system/03-strategy.md)
+- [04 — Risk & Safety](Doc/Infrastructure/live-system/04-risk-and-safety.md)
+- [05 — Scheduled Jobs](Doc/Infrastructure/live-system/05-scheduled-jobs.md)
+- [06 — Telegram Bots](Doc/Infrastructure/live-system/06-telegram-bots.md)
+- [07 — State Files](Doc/Infrastructure/live-system/07-state-files.md)
+- [08 — Tech Stack](Doc/Infrastructure/live-system/08-tech-stack.md)
+- [09 — Operations](Doc/Infrastructure/live-system/09-operations.md)
+- [10 — Known Limits](Doc/Infrastructure/live-system/10-known-limits.md)
