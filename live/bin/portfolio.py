@@ -2,7 +2,7 @@
 """Polar portfolio manager — equity history, 24h drawdown circuit breaker,
 net delta and BTC-correlation advisory. Reads the broker; never closes anything.
 Use --dry to print without writing or alerting."""
-import json, sys, urllib.request
+import json, os, sys, urllib.request
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -53,7 +53,19 @@ def iso(d):
     return d.isoformat()
 
 
+def write_heartbeat():
+    if DRY:
+        return
+    import datetime as _dt
+    hb = {"ts": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+          "pid": os.getpid(), "script": "portfolio"}
+    tmp = STATE / "heartbeat-portfolio.json.tmp"
+    tmp.write_text(json.dumps(hb))
+    tmp.replace(STATE / "heartbeat-portfolio.json")
+
+
 def main():
+    write_heartbeat()
     info = _broker.account_info()
     positions = _broker.account_portfolio()
     net_liq = float(info["netLiquidation"])
@@ -74,8 +86,8 @@ def main():
         hist_path.write_text("".join(json.dumps(r) + "\n" for r in rows))
     last24 = [r["net_liq"] for r in rows
               if now() - datetime.fromisoformat(r["recorded_at"]) <= timedelta(hours=24)]
-    peak = max(last24)
-    dd = (peak - net_liq) / peak * 100
+    peak = max(last24) if last24 else net_liq
+    dd = (peak - net_liq) / peak * 100 if peak > 0 else 0.0
     print(f"equity {net_liq} upnl {upnl} peak24h {peak} drawdown {dd:.2f}%")
 
     # circuit breaker

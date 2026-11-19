@@ -5,7 +5,7 @@ Never a TP, never a stop, never a close (guardian owns exits).
   python3 scanner.py          dry-run: print what it would do, place nothing
   python3 scanner.py --live   place ENTRY limit orders
 """
-import json, re, subprocess, sys, urllib.request
+import json, os, re, subprocess, sys, urllib.request
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -13,15 +13,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 import broker as _broker
 import indicators as _ind
 import universe as _universe
-from config import TG_TOKEN, TG_CHAT
+from config import TG_TOKEN, TG_CHAT, STRATEGY
 
 STATE = Path("/home/kyubi/Polar/live/state")
-LIVE = "--live" in sys.argv
-LEVERAGE = 3  # account leverage — keep in sync with Bitget account setting
+LIVE  = "--live" in sys.argv
 
-# High-volatility regime threshold: when BTC annualised realised vol > this,
-# cut position size in half. Research shows this improves Sharpe significantly.
-HIGH_VOL_ANN_THRESHOLD = 0.80
+LEVERAGE   = STRATEGY["leverage"]
+RISK_TRADE = STRATEGY["risk_per_trade"]
 
 
 def now():
@@ -92,6 +90,15 @@ def append(rec):
     if LIVE:
         with open(STATE / "trade-signals.jsonl", "a") as f:
             f.write(json.dumps(rec) + "\n")
+
+
+def write_heartbeat():
+    if not LIVE:
+        return
+    hb = {"ts": z(), "pid": os.getpid(), "script": "scanner"}
+    tmp = STATE / "heartbeat-scanner.json.tmp"
+    tmp.write_text(json.dumps(hb))
+    tmp.replace(STATE / "heartbeat-scanner.json")
 
 
 def gates():
@@ -196,7 +203,41 @@ def review(base, d, pts, m, regime, equity, qty, price, sl, stop, tp1, tp2, open
         return False, f"review failed (fail closed): {str(e)[:120]}"
 
 
+def _drawdown_scale():
+    """Return 0.5 if 7-day drawdown > 8%, else 1.0."""
+    rows = []
+    try:
+        for line in (STATE / "portfolio-history.jsonl").read_text().splitlines():
+            if line.strip():
+                rows.append(json.loads(line))
+    except Exception:
+        return 1.0
+    if len(rows) < 2:
+        return 1.0
+    peak = max(r["net_liq"] for r in rows)
+    cur  = rows[-1]["net_liq"]
+    dd   = (peak - cur) / peak if peak > 0 else 0
+    if dd > STRATEGY["drawdown_threshold"]:
+        log(f"DRAWDOWN SCALING: {dd*100:.1f}% from 7d peak → 50% position size")
+        return STRATEGY["drawdown_scale"]
+    return 1.0
+
+
+def _corr_scale(opens, pend, allowed, m):
+    """Return 0.5 if adding this coin would push same-direction portfolio BTC-corr over cap."""
+    all_pos = list(opens.values()) + list(pend.values())
+    same = [p for p in all_pos if p.get("side") == allowed]
+    total_corr = sum(float(p.get("btc_corr", 0.5)) for p in same)
+    total_corr += float(m.get("btc_corr", 0.5))  # including this new entry
+    if total_corr > STRATEGY["corr_total_cap"]:
+        log(f"CORRELATION SCALING: projected portfolio BTC-corr {total_corr:.2f} > "
+            f"{STRATEGY['corr_total_cap']} → 50% size")
+        return 0.5
+    return 1.0
+
+
 def main():
+    write_heartbeat()
     reg, why = gates()
     if why:
         return log(f"exit: {why}")
@@ -204,13 +245,13 @@ def main():
     opens = rj("open-positions.json", {})
     pend  = rj("pending-orders.json", {})
     total = len(opens) + len(pend)
-    if total >= 5:
+    if total >= STRATEGY["max_positions"]:
         return log("exit: position cap")
     sides = [v["side"] for v in list(opens.values()) + list(pend.values())]
     held  = {v["symbol"].split("/")[0] for v in list(opens.values()) + list(pend.values())}
     allowed = "LONG" if regime == "BULLISH" else "SHORT"
-    if sides.count(allowed) >= 2:
-        return log(f"exit: {allowed} cap (2) reached")
+    if sides.count(allowed) >= STRATEGY["max_per_direction"]:
+        return log(f"exit: {allowed} cap ({STRATEGY['max_per_direction']}) reached")
 
     info   = _broker.account_info()
     broker = _broker.account_portfolio()
@@ -218,17 +259,19 @@ def main():
     b_syms = {p["symbol"] for p in broker}
     b_side = [p["side"].upper() for p in broker]
     pend_only = [v for v in pend.values() if v["symbol"].split("/")[0] not in b_syms]
-    if len(broker) + len(pend_only) >= 5:
+    cap  = STRATEGY["max_positions"]
+    dcap = STRATEGY["max_per_direction"]
+    if len(broker) + len(pend_only) >= cap:
         return log(f"exit: position cap (broker shows {len(broker)} open + {len(pend_only)} pending)")
-    if b_side.count(allowed) + [v["side"] for v in pend_only].count(allowed) >= 2:
-        return log(f"exit: {allowed} cap (2) reached (broker view)")
+    if b_side.count(allowed) + [v["side"] for v in pend_only].count(allowed) >= dcap:
+        return log(f"exit: {allowed} cap ({dcap}) reached (broker view)")
     held |= b_syms
     used = sum(float(p["marketValue"]) / float((p.get("risk") or {}).get("leverage") or LEVERAGE)
                for p in broker)
     used += sum(v["qty"] * v["limit_price"] / LEVERAGE for v in pend.values())
     free = equity - used
-    if free < 15:
-        return log(f"exit: free margin {free:.2f} < 15")
+    if free < STRATEGY["min_free_margin"]:
+        return log(f"exit: free margin {free:.2f} < {STRATEGY['min_free_margin']}")
 
     ex = _broker._ex()
 
@@ -236,33 +279,51 @@ def main():
     universe = _universe.build(ex)
     to_scan  = [s for s in universe if s not in held]
 
-    # BTC volatility regime: scale down in high-vol environments
-    btc_vol = _ind.btc_realized_vol_ann(ex)
-    vol_scale = 0.5 if btc_vol > HIGH_VOL_ANN_THRESHOLD else 1.0
+    # Composite size scale: BTC vol × drawdown × (correlation penalty applied per-trade below)
+    btc_vol   = _ind.btc_realized_vol_ann(ex)
+    vol_scale = STRATEGY["btc_vol_scale"] if btc_vol > STRATEGY["btc_vol_threshold"] else 1.0
     if vol_scale < 1.0:
-        log(f"HIGH-VOL REGIME: BTC ann vol {btc_vol*100:.0f}% > {HIGH_VOL_ANN_THRESHOLD*100:.0f}% → 50% position size")
+        log(f"HIGH-VOL REGIME: BTC ann vol {btc_vol*100:.0f}% → 50% position size")
+    dd_scale  = _drawdown_scale()
+    base_scale = vol_scale * dd_scale  # applied to every trade this run
+
+    # Dynamic score threshold: relax by 1 when regime confidence is very high
+    reg_conf = float(reg.get("confidence", 5))
+    min_score = STRATEGY["score_threshold"] - (1 if reg_conf >= 8.0 else 0)
+    if min_score < STRATEGY["score_threshold"]:
+        log(f"HIGH-CONFIDENCE REGIME ({reg_conf}/10): score threshold lowered to {min_score}/8")
 
     results = _ind.compute_scan(ex, to_scan)
 
-    cands = []
-    watchlist = []  # near-miss: score 5-6, right direction
+    cands    = []
+    watchlist = []  # near-miss: score (min_score - 2) to (min_score - 1)
     for s, m in results.items():
         d, pts = score(m)
         log(f"{s}: {d} {pts}/8 "
             f"(rsi4h {m['rsi_4h']:.0f}, slope {m['ema20_4h_slope']*100:.2f}%, "
             f"z8 {m['z8_4h']:.2f}, OI {m.get('oi_change_24h',0)*100:.1f}%, "
             f"RS {m.get('rs_vs_btc',1.0):.2f}x, fr {m['funding_rate']*100:.4f}%)")
-        if d == allowed and pts >= 7:
+        if d == allowed and pts >= min_score:
             cands.append((pts, s, d, m))
-        elif d == allowed and 5 <= pts <= 6:
-            watchlist.append((pts, s, d, m))
+        elif d == allowed and (min_score - 2) <= pts < min_score:
+            watchlist.append({"base": s, "side": d, "score": pts, "price": m["price"],
+                              "oi_pct": round(m.get("oi_change_24h", 0) * 100, 1),
+                              "rs": round(m.get("rs_vs_btc", 1.0), 2),
+                              "rsi_4h": round(m["rsi_4h"], 1), "scanned_at": z()})
+
+    # Save watchlist to state for /watchlist bot command
+    if LIVE:
+        wl_data = {"scanned_at": z(), "regime": regime, "coins": sorted(watchlist, key=lambda x: -x["score"])[:10]}
+        wl_tmp = STATE / "watchlist-cache.json.tmp"
+        wl_tmp.write_text(json.dumps(wl_data, indent=2))
+        wl_tmp.replace(STATE / "watchlist-cache.json")
 
     # Watchlist alert: coins 1-2 points from triggering an entry
     if watchlist and LIVE:
         wl_text = "\n".join(
-            f"  {s}/USDT {dd} {p}/8 — OI {m.get('oi_change_24h',0)*100:.1f}%, RS {m.get('rs_vs_btc',1.0):.2f}x"
-            for p, s, dd, m in sorted(watchlist, key=lambda x: -x[0])[:5])
-        tg(f"👁 <b>WATCHLIST</b>\nCoins near entry (score 5-6/8):\n{wl_text}")
+            f"  {w['base']}/USDT {w['side']} {w['score']}/8 — OI {w['oi_pct']:+.1f}%, RS {w['rs']:.2f}x"
+            for w in sorted(watchlist, key=lambda x: -x["score"])[:5])
+        tg(f"👁 <b>WATCHLIST</b>\nCoins near entry ({min_score-2}-{min_score-1}/8):\n{wl_text}")
     cands.sort(key=lambda c: -c[0])
 
     adv = rj("correlation-advisory.json", {}).get("positions", {})
@@ -285,27 +346,32 @@ def main():
         sym = f"{s}/USDT:USDT"
         price = m["price"]
         # Use 4h ATR for stop distance — appropriate for 1-3 day holds
-        atr14 = m["atr14_4h"]
-        sl = min(max(atr14 * 1.5 / price, 0.015), 0.06)
-        risk_usd = equity * 0.015 * vol_scale
-        qty = min(risk_usd / (price * sl), (free * 0.8 * LEVERAGE * vol_scale) / price)
+        atr14   = m["atr14_4h"]
+        sl      = min(max(atr14 * STRATEGY["atr_sl_mult"] / price,
+                          STRATEGY["sl_min"]), STRATEGY["sl_max"])
+        c_scale = _corr_scale(opens, pend, d, m)
+        eff_scale = base_scale * c_scale
+        risk_usd = equity * RISK_TRADE * eff_scale
+        qty = min(risk_usd / (price * sl), (free * 0.8 * LEVERAGE * eff_scale) / price)
         qty_s   = ex.amount_to_precision(sym, qty)
         price_s = ex.price_to_precision(sym, price)
         qty, price_f = float(qty_s), float(price_s)
         if qty <= 0 or qty * price_f / LEVERAGE > free * 0.8:
             log(f"{s}: skipped, size/margin")
             continue
-        short = d == "SHORT"
-        stop  = price_f * (1 + sl) if short else price_f * (1 - sl)
+        short  = d == "SHORT"
+        stop   = price_f * (1 + sl) if short else price_f * (1 - sl)
         # Two-leg TP: 50% at 1×R (book profits), 50% at 2.5×R (let winner run)
-        tp1   = price_f * (1 - sl)       if short else price_f * (1 + sl)
-        tp2   = price_f * (1 - 2.5 * sl) if short else price_f * (1 + 2.5 * sl)
+        tp1_r  = STRATEGY["tp1_r"]
+        tp2_r  = STRATEGY["tp2_r"]
+        tp1    = price_f * (1 - tp1_r * sl) if short else price_f * (1 + tp1_r * sl)
+        tp2    = price_f * (1 - tp2_r * sl) if short else price_f * (1 + tp2_r * sl)
         action = "SELL" if short else "BUY"
         risk_pct = qty * price_f * sl / equity * 100
         log(f"ENTRY {s} {d} score {pts}/8: {action} LMT {qty_s} @ {price_s} "
             f"(sl {sl*100:.2f}%, risk {risk_pct:.2f}%, "
             f"tp1 {tp1:.6g} [1R], tp2 {tp2:.6g} [2.5R], stop watch {stop:.6g})")
-        if risk_pct > 2.0:
+        if risk_pct > STRATEGY["max_risk_pct"]:
             log(f"{s}: skipped, risk {risk_pct:.2f}% above 2% cap after lot rounding")
             append({"type": "skipped", "symbol": sym, "reason": f"risk_{risk_pct:.1f}pct", "entered_at": z()})
             continue
@@ -329,7 +395,7 @@ def main():
         key = f"{s}_{int(now().timestamp())}"
         pend[key] = {
             "symbol": sym, "side": d, "limit_price": price_f, "qty": qty,
-            "stop_level": stop, "tp_level": tp, "sl_distance_pct": sl,
+            "stop_level": stop, "tp_level": tp2, "sl_distance_pct": sl,
             "atr14_4h": atr14, "atr14_15m": m["atr14_15m"], "ema20_4h": m["ema20_4h"],
             "ema20_1d": m["ema20_1d"], "btc_corr": m["btc_corr"],
             "tp1_level": tp1, "tp2_level": tp2,

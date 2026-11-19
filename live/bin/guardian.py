@@ -10,7 +10,7 @@ position on its own. Stops, regime flips and 1R partials only create an approval
 execute_approved(), and only for a symbol present in close-approvals.json, which is written
 by Lorenzo's Telegram tap, never by this script. Silence is not approval: a request unanswered
 for 30 minutes writes pause.json and keeps asking."""
-import json, sys, time, urllib.request
+import json, os, sys, time, urllib.request
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
@@ -19,12 +19,13 @@ import fcntl, copy
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 import broker as _broker
 import indicators as _ind
-from config import TG_TOKEN, TG_CHAT
+from config import TG_TOKEN, TG_CHAT, STRATEGY
 
 STATE = Path("/home/kyubi/Polar/live/state")
 LIVE = "--live" in sys.argv
 REJECT_QUIET = timedelta(hours=6)
-RE_ALERT = timedelta(minutes=30)
+RE_ALERT     = timedelta(minutes=30)
+_cycle_count = 0
 
 
 # ---------- helpers ----------
@@ -184,18 +185,52 @@ def cancel_leftovers(aid, base):
             cancel(o["orderId"], sym, f"Guardian cleanup {base}")
 
 
+def write_heartbeat():
+    if not LIVE:
+        return
+    hb = {"ts": z(), "pid": os.getpid(), "script": "guardian", "cycle": _cycle_count}
+    tmp = STATE / "heartbeat-guardian.json.tmp"
+    tmp.write_text(json.dumps(hb))
+    tmp.replace(STATE / "heartbeat-guardian.json")
+
+
 def record_close(p, exit_price, outcome):
     short = p["side"] == "SHORT"
     e = p["entry_price"]
     pnl = ((e - exit_price) if short else (exit_price - e)) / e * 100
+    sl  = float(p.get("sl_distance_pct", 0) or 0)
+    r_multiple = round(pnl / 100 / sl, 2) if sl > 0 else None
+    held_hours = None
+    try:
+        held_hours = round((now() - parse(p["entered_at"])).total_seconds() / 3600, 1)
+    except Exception:
+        pass
     rec = {"type": "close", "symbol": p["symbol"], "side": p["side"], "entry_price": e,
-           "exit_price": exit_price, "pnl_pct": round(pnl, 3), "outcome": outcome,
-           "regime": p.get("regime"), "score": p.get("score"),
-           "entered_at": p.get("entered_at"), "closed_at": z()}
+           "exit_price": exit_price, "pnl_pct": round(pnl, 3), "r_multiple": r_multiple,
+           "outcome": outcome, "regime": p.get("regime"), "score": p.get("score"),
+           "entered_at": p.get("entered_at"), "closed_at": z(), "held_hours": held_hours,
+           "partial_tp_done": p.get("partial_tp_done", False)}
     log(f"RECORD {json.dumps(rec)}")
     if LIVE:
+        # trade-signals.jsonl: full history
         with open(STATE / "trade-signals.jsonl", "a") as f:
             f.write(json.dumps(rec) + "\n")
+        # trades.jsonl: clean journal for the bot /report command
+        trade = {
+            "ts":          z(),
+            "symbol":      p["symbol"].split("/")[0],
+            "side":        p["side"],
+            "entry":       round(e, 6),
+            "exit":        round(exit_price, 6),
+            "pnl_pct":     round(pnl, 3),
+            "r":           r_multiple,
+            "held_hours":  held_hours,
+            "outcome":     outcome,
+            "score":       p.get("score"),
+            "regime":      p.get("regime"),
+        }
+        with open(STATE / "trades.jsonl", "a") as f:
+            f.write(json.dumps(trade) + "\n")
     return pnl
 
 
@@ -328,6 +363,9 @@ def execute_approved(base, appr, p, opens, key, consume, price):
 # ---------- main pass ----------
 
 def run():
+    global _cycle_count
+    _cycle_count += 1
+    write_heartbeat()
     opens = rj("open-positions.json", {})
     pend  = rj("pending-orders.json", {})
     approvals = rj("close-approvals.json", {})
@@ -443,7 +481,7 @@ def run():
             append_signal({"type": "skipped", "symbol": e["symbol"], "reason": "entry_not_open"})
             pend.pop(key)
             changed = True
-        elif now() - parse(e["placed_at"]) > timedelta(hours=24):
+        elif now() - parse(e["placed_at"]) > timedelta(hours=STRATEGY["entry_timeout_hours"]):
             # 4h/daily strategy: entries are limit orders near EMA — give them 24h to fill
             cancel(e["order_id"], symbol_of(aid), f"Guardian cancel stale entry {base}")
             append_signal({"type": "skipped", "symbol": e["symbol"], "reason": "entry_expired"})
@@ -554,7 +592,8 @@ def run():
         try:
             fr_data = _broker._ex().fetch_funding_rate(f"{base}/USDT:USDT")
             fr = float(fr_data.get("fundingRate", 0))
-            fr_extreme = (not short and fr > 0.001) or (short and fr < -0.0005)
+            fr_extreme = ((not short and fr > STRATEGY["funding_long_exit"])
+                          or (short and fr < STRATEGY["funding_short_exit"]))
             if fr_extreme and base not in requests:
                 request_close(base, side,
                               f"funding_extreme ({fr*100:.4f}%/8h)",
@@ -564,11 +603,12 @@ def run():
             pass
 
         # Time-based exit: zombie positions tie up margin and bleed funding
-        # If we've held 10+ 4h bars (~40h) and PnL < -0.3R, request close
         entered_at = p.get("entered_at") or "1970-01-01T00:00:00Z"
         held_hours = (now() - parse(entered_at)).total_seconds() / 3600
-        loss_r = -upnl / (sl * 100) if sl > 0 else 0  # how many R down
-        if held_hours > 40 and loss_r > 0.3 and base not in requests:
+        loss_r = -upnl / (sl * 100) if sl > 0 else 0
+        if (held_hours > STRATEGY["time_stop_hours"]
+                and loss_r > STRATEGY["time_stop_loss_r"]
+                and base not in requests):
             request_close(base, side,
                           f"time_stop (held {held_hours:.0f}h, down {loss_r:.1f}R)",
                           price, entry, upnl, requests)

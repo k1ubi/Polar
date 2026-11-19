@@ -1,24 +1,40 @@
 """Pure-numpy indicator library — replaces OpenAlice `alice analysis quant` scripts."""
-import sys
+import sys, time
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# ── in-process BTC vol cache (valid for 1 h, avoids repeated daily bar fetches) ──
+_btc_vol_cache: dict = {}   # {"vol": float, "ts": float}
+_BTC_VOL_TTL = 3600         # seconds
 
 
 # ── bar fetching ─────────────────────────────────────────────────────────────
 
-def fetch_bars(exchange, symbol: str, timeframe: str, count: int) -> dict:
-    """Return OHLCV arrays for `symbol`. Raises on failure."""
-    ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=count)
-    if not ohlcv:
-        raise ValueError(f"no OHLCV data for {symbol} {timeframe}")
-    arr = np.array(ohlcv, dtype=float)
-    return {
-        "open":   arr[:, 1],
-        "high":   arr[:, 2],
-        "low":    arr[:, 3],
-        "close":  arr[:, 4],
-        "volume": arr[:, 5],
-    }
+def fetch_bars(exchange, symbol: str, timeframe: str, count: int,
+               retries: int = 3) -> dict:
+    """Return OHLCV arrays for `symbol`. Retries on transient network errors."""
+    for attempt in range(retries):
+        try:
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=count)
+            if not ohlcv:
+                raise ValueError(f"no OHLCV data for {symbol} {timeframe}")
+            arr = np.array(ohlcv, dtype=float)
+            return {
+                "open":   arr[:, 1],
+                "high":   arr[:, 2],
+                "low":    arr[:, 3],
+                "close":  arr[:, 4],
+                "volume": arr[:, 5],
+            }
+        except ValueError:
+            raise
+        except Exception as exc:
+            if attempt >= retries - 1:
+                raise
+            wait = 2.0 * (2 ** attempt)
+            print(f"fetch_bars {symbol} {timeframe}: {exc}, retry {attempt+1} in {wait:.0f}s",
+                  file=sys.stderr)
+            time.sleep(wait)
 
 
 # ── indicators (return a single float: the LAST bar's value) ────────────────
@@ -120,14 +136,17 @@ def oi_change_pct(exchange, symbol: str) -> float:
 
 
 def btc_realized_vol_ann(exchange) -> float:
-    """Annualised 20-day realized volatility of BTC. Used to scale position size in high-vol regimes."""
+    """Annualised 20-day realized volatility of BTC. Cached in-process for 1 h."""
+    if _btc_vol_cache.get("ts", 0) + _BTC_VOL_TTL > time.time():
+        return _btc_vol_cache["vol"]
     try:
-        bars = fetch_bars(exchange, "BTC/USDT:USDT", "1d", 22)
+        bars    = fetch_bars(exchange, "BTC/USDT:USDT", "1d", 22)
         log_ret = np.diff(np.log(bars["close"].astype(float)))[-20:]
-        daily_vol = float(log_ret.std())
-        return daily_vol * (365 ** 0.5)  # annualise
+        vol     = float(log_ret.std()) * (365 ** 0.5)
+        _btc_vol_cache.update({"vol": vol, "ts": time.time()})
+        return vol
     except Exception:
-        return 0.5  # assume 50% annualised as a neutral default
+        return _btc_vol_cache.get("vol", 0.5)
 
 
 def relative_strength_vs_btc(close_coin: np.ndarray, close_btc: np.ndarray, period: int = 20) -> float:

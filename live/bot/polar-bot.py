@@ -167,6 +167,7 @@ async def button_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "positions": _positions_text,
         "equity":    _equity_text,
         "report":    _report_text,
+        "watchlist": _watchlist_text,
         "monitor":   _monitor_text,
         "metrics":   _metrics_text,
         "regime":    _regime_text,
@@ -291,26 +292,64 @@ async def _regime_text():
 
 
 async def _report_text():
-    trades = load_jsonl(STATE_DIR / "trade-signals.jsonl")
-    closed = [t for t in trades if t.get("type") == "close"]
+    # Prefer trades.jsonl (richer: R-multiple, hold time) falling back to trade-signals.jsonl
+    closed = load_jsonl(STATE_DIR / "trades.jsonl")
+    if not closed:
+        raw = load_jsonl(STATE_DIR / "trade-signals.jsonl")
+        closed = [t for t in raw if t.get("type") == "close"]
     if not closed:
         return "📋 No closed trades yet.", "HTML"
-    recent = closed[-30:]
-    wins = [t for t in recent if t.get("pnl_pct", 0) > 0]
-    total_pnl = sum(t.get("pnl_pct", 0) for t in recent)
-    win_rate = len(wins) / len(recent) * 100
-    lines = [
-        f"📋 <b>Trade Report</b> (last {len(recent)})\n",
-        f"Win rate: {win_rate:.0f}%  |  Total PnL: {total_pnl:+.2f}%\n",
+    pnls    = [float(t.get("pnl_pct", 0)) for t in closed]
+    wins    = [p for p in pnls if p > 0]
+    losses  = [p for p in pnls if p <= 0]
+    win_r   = len(wins) / len(pnls) * 100 if pnls else 0
+    avg_w   = sum(wins) / len(wins) if wins else 0
+    avg_l   = sum(losses) / len(losses) if losses else 0
+    rr      = abs(avg_w / avg_l) if avg_l else 0
+    r_vals  = [float(t["r"]) for t in closed if t.get("r") is not None]
+    avg_r   = sum(r_vals) / len(r_vals) if r_vals else None
+    recent  = closed[-20:]
+    lines   = [
+        f"📋 <b>Trade Journal</b> ({len(closed)} total)\n",
+        f"Win rate: <b>{win_r:.0f}%</b>  ({len(wins)}W / {len(losses)}L)\n"
+        f"Avg win: +{avg_w:.2f}%  |  Avg loss: {avg_l:.2f}%  |  R:R {rr:.2f}"
+        + (f"  |  Avg R: {avg_r:+.2f}R" if avg_r is not None else "") + "\n",
     ]
     for t in reversed(recent[-15:]):
-        date = t.get("closed_at", "")[:10]
-        sym = t.get("symbol", "?").split("/")[0]
-        side = t.get("side", "?").upper()
-        pnl = t.get("pnl_pct", 0)
+        date    = str(t.get("ts", t.get("closed_at", "")))[:10]
+        sym     = str(t.get("symbol", "?")).split("/")[0]
+        side    = str(t.get("side", "?")).upper()
+        pnl     = float(t.get("pnl_pct", 0))
+        r       = t.get("r")
+        held    = t.get("held_hours")
         outcome = t.get("outcome", "?")
-        emoji = "✅" if pnl > 0 else "❌"
-        lines.append(f"{emoji} {date} | {sym} {side} | {pnl:+.2f}% | {outcome}")
+        emoji   = "✅" if pnl > 0 else "❌"
+        r_str   = f" ({r:+.1f}R)" if r is not None else ""
+        h_str   = f" {held:.0f}h" if held is not None else ""
+        lines.append(f"{emoji} {date} | {sym} {side} | {pnl:+.2f}%{r_str}{h_str} | {outcome}")
+    return "\n".join(lines), "HTML"
+
+
+async def _watchlist_text():
+    wl = load_json(STATE_DIR / "watchlist-cache.json", {})
+    if not wl or not wl.get("coins"):
+        return "👁 No watchlist data yet. Runs after the next scanner cycle.", "HTML"
+    regime  = wl.get("regime", "?")
+    scanned = str(wl.get("scanned_at", "?"))[:16]
+    lines   = [f"👁 <b>Watchlist</b> — regime {regime}  ({scanned}Z)\n",
+               "Coins near entry (1-2 pts below threshold):\n"]
+    for c in wl["coins"]:
+        side  = c.get("side", "?")
+        score = c.get("score", 0)
+        price = c.get("price", 0)
+        oi    = c.get("oi_pct", 0)
+        rs    = c.get("rs", 1.0)
+        rsi   = c.get("rsi_4h", 0)
+        emoji = "🔼" if side == "LONG" else "🔽"
+        lines.append(
+            f"{emoji} <b>{c['base']}</b>  {score}/8  ${price:.4g}\n"
+            f"   RSI {rsi:.0f} | OI {oi:+.1f}% | RS vs BTC {rs:.2f}x"
+        )
     return "\n".join(lines), "HTML"
 
 
@@ -463,6 +502,21 @@ def _job_line(unit, label, max_min):
         return f"⚪ {label}: {str(e)[:40]}"
 
 
+def _heartbeat_line(name: str, max_seconds: int) -> str:
+    """Check heartbeat file freshness. max_seconds = expected cycle interval × 2."""
+    try:
+        hb = load_json(STATE_DIR / f"heartbeat-{name}.json", {})
+        ts = hb.get("ts", "")
+        if not ts:
+            return f"⚪ {name}: no heartbeat yet"
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(ts.replace("Z", "+00:00"))).total_seconds()
+        if age > max_seconds:
+            return f"🔴 {name}: last seen {int(age/60)} min ago — may be hung"
+        return f"🟢 {name}: alive ({int(age)}s ago)"
+    except Exception:
+        return f"⚪ {name}: heartbeat unreadable"
+
+
 async def _services_text():
     lines = ["⚙️ <b>Services Status</b>\n"]
     for svc in ["polar-bot", "polar-user-bot"]:
@@ -477,6 +531,11 @@ async def _services_text():
             lines.append(f"⚪ {svc}.service")
     lines.append("\n🤖 <b>Trading jobs</b>")
     lines += [_job_line(*j) for j in POLAR_JOBS]
+    lines.append("\n💓 <b>Heartbeats</b>")
+    lines.append(_heartbeat_line("guardian",  180))   # guardian runs every ~60s
+    lines.append(_heartbeat_line("scanner",   18000))  # scanner runs every 4h
+    lines.append(_heartbeat_line("portfolio", 1800))   # portfolio runs every 15 min
+    lines.append(_heartbeat_line("regime",    90000))  # regime runs daily
     # State summary
     opens  = len(load_json(STATE_DIR / "open-positions.json",  {}))
     pend   = len(load_json(STATE_DIR / "pending-orders.json",  {}))
@@ -885,6 +944,12 @@ async def cmd_regime(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 @only_owner
+async def cmd_watchlist(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    text, mode = await _watchlist_text()
+    await update.message.reply_text(text, parse_mode=mode, reply_markup=MAIN_KEYBOARD)
+
+
+@only_owner
 async def cmd_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Cancel a pending entry order. Usage: /cancel BTC"""
     if not ctx.args:
@@ -959,6 +1024,7 @@ def main():
     app.add_handler(CommandHandler("pause",     cmd_pause))
     app.add_handler(CommandHandler("resume",    cmd_resume))
     app.add_handler(CommandHandler("cancel",    cmd_cancel))
+    app.add_handler(CommandHandler("watchlist", cmd_watchlist))
     app.add_handler(CommandHandler("decisions", cmd_decisions))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(

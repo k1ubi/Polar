@@ -4,7 +4,7 @@ Returns dicts shaped like the former OpenAlice CLI so guardian/scanner/portfolio
 need only minimal changes. Credentials come from live/.env or environment variables:
   BITGET_API_KEY, BITGET_SECRET, BITGET_PASSPHRASE
 """
-import os, sys
+import os, sys, time
 from pathlib import Path
 import ccxt
 
@@ -20,6 +20,20 @@ def _load_env():
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
                 os.environ.setdefault(k.strip(), v.strip())
+
+
+def with_retry(fn, *args, retries: int = 3, base_delay: float = 2.0, **kwargs):
+    """Retry a ccxt call on transient network errors with exponential back-off."""
+    for attempt in range(retries):
+        try:
+            return fn(*args, **kwargs)
+        except (ccxt.NetworkError, ccxt.RequestTimeout) as exc:
+            if attempt >= retries - 1:
+                raise
+            wait = base_delay * (2 ** attempt)
+            print(f"broker: transient error ({exc}), retry {attempt+1}/{retries-1} in {wait:.0f}s",
+                  file=sys.stderr)
+            time.sleep(wait)
 
 
 def _ex() -> ccxt.bitget:
