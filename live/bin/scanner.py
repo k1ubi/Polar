@@ -12,13 +12,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 import broker as _broker
 import indicators as _ind
+import universe as _universe
 from config import TG_TOKEN, TG_CHAT
 
 STATE = Path("/home/kyubi/Polar/live/state")
 LIVE = "--live" in sys.argv
-UNIVERSE = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "AVAX", "LINK", "SUI",
-            "NEAR", "ARB", "APT", "INJ", "OP", "HYPE", "AAVE", "WIF", "TIA", "SEI"]
 LEVERAGE = 3  # account leverage — keep in sync with Bitget account setting
+
+# High-volatility regime threshold: when BTC annualised realised vol > this,
+# cut position size in half. Research shows this improves Sharpe significantly.
+HIGH_VOL_ANN_THRESHOLD = 0.80
 
 
 def now():
@@ -113,51 +116,50 @@ def gates():
 
 
 def score(m):
-    """4h/daily trend-following score (max 8).
-
-    Strategy: buy pullbacks to the 4h EMA-20 when the daily trend is up;
-    short bounces when daily trend is down. Hold 1-3 days. Never trade
-    against the daily EMA-20 slope.
+    """4h/daily trend-following score (max 8, threshold 7).
 
     Points breakdown (LONG example):
-      +2  4h RSI 42-62  — pulled back from overbought, not yet oversold
-      +2  daily EMA-20 slope positive  — macro trend intact
-      +2  4h z-score -1.5 to +0.3  — mild pullback, not too extended
-      +1  4h rvol >= 1.3  — volume expanding on the move
-      +1  funding rate <= 0.0003  — not paying excessive funding (< 1.3%/day)
+      +2  4h RSI 42-62       — momentum range; not chasing, not capitulating
+      +1  4h EMA-20 slope    — intermediate trend direction
+      +2  4h z-score         — mild pullback entry timing
+      +1  OI change > +2%    — new money entering → genuine trend (not short-covering)
+      +1  RS vs BTC > 1.05   — coin outperforming BTC → positive momentum
+      +1  funding ≤ 0.03%    — not paying excessive carry on a crowded position
+
+    Hard gate (not scored): weekly EMA-50 — price below it blocks all LONGs.
     """
     p, e4h, e1d = m["price"], m["ema20_4h"], m["ema20_1d"]
-    slope = m["ema20_4h_slope"]  # positive = EMA rising, negative = falling
+    slope = m["ema20_4h_slope"]
 
-    # Weekly macro filter: never fight the weekly EMA-50
-    # This eliminates the biggest drawdowns — trading with the highest-timeframe trend
     if not m.get("weekly_above", True):
-        # Price below weekly EMA-50 → only shorts allowed
+        # Weekly bearish — only shorts
         if p < e4h and p < e1d:
             pts = (2 * (38 <= m["rsi_4h"] <= 58)
-                   + 2 * (slope < -0.001)
+                   + 1 * (slope < -0.001)
                    + 2 * (-0.3 <= m["z8_4h"] <= 1.5)
-                   + (m["rvol_4h"] >= 1.3)
-                   + (m["funding_rate"] >= -0.0003))
+                   + 1 * (m.get("oi_change_24h", 0) < -0.02)
+                   + 1 * (m.get("rs_vs_btc", 1.0) < 0.95)
+                   + 1 * (m["funding_rate"] >= -0.0003))
             return "SHORT", pts
-        return None, 0  # weekly bearish, no longs
+        return None, 0
 
-    # Weekly bullish (or unknown) — both directions allowed from 4h/daily
     if p > e4h and p > e1d:
         pts = (2 * (42 <= m["rsi_4h"] <= 62)
-               + 2 * (slope > 0.001)
+               + 1 * (slope > 0.001)
                + 2 * (-1.5 <= m["z8_4h"] <= 0.3)
-               + (m["rvol_4h"] >= 1.3)
-               + (m["funding_rate"] <= 0.0003))
+               + 1 * (m.get("oi_change_24h", 0) > 0.02)
+               + 1 * (m.get("rs_vs_btc", 1.0) > 1.05)
+               + 1 * (m["funding_rate"] <= 0.0003))
         return "LONG", pts
     if p < e4h and p < e1d:
         pts = (2 * (38 <= m["rsi_4h"] <= 58)
-               + 2 * (slope < -0.001)
+               + 1 * (slope < -0.001)
                + 2 * (-0.3 <= m["z8_4h"] <= 1.5)
-               + (m["rvol_4h"] >= 1.3)
-               + (m["funding_rate"] >= -0.0003))
+               + 1 * (m.get("oi_change_24h", 0) < -0.02)
+               + 1 * (m.get("rs_vs_btc", 1.0) < 0.95)
+               + 1 * (m["funding_rate"] >= -0.0003))
         return "SHORT", pts
-    return None, 0  # price between 4h and daily EMA — no clear trend
+    return None, 0
 
 
 def review(base, d, pts, m, regime, equity, qty, price, sl, stop, tp1, tp2, open_view, headlines):
@@ -229,18 +231,38 @@ def main():
         return log(f"exit: free margin {free:.2f} < 15")
 
     ex = _broker._ex()
-    to_scan = [s for s in UNIVERSE if s not in held]
+
+    # Dynamic universe: top coins by OI + momentum, filtered by liquidity
+    universe = _universe.build(ex)
+    to_scan  = [s for s in universe if s not in held]
+
+    # BTC volatility regime: scale down in high-vol environments
+    btc_vol = _ind.btc_realized_vol_ann(ex)
+    vol_scale = 0.5 if btc_vol > HIGH_VOL_ANN_THRESHOLD else 1.0
+    if vol_scale < 1.0:
+        log(f"HIGH-VOL REGIME: BTC ann vol {btc_vol*100:.0f}% > {HIGH_VOL_ANN_THRESHOLD*100:.0f}% → 50% position size")
+
     results = _ind.compute_scan(ex, to_scan)
 
     cands = []
+    watchlist = []  # near-miss: score 5-6, right direction
     for s, m in results.items():
         d, pts = score(m)
         log(f"{s}: {d} {pts}/8 "
             f"(rsi4h {m['rsi_4h']:.0f}, slope {m['ema20_4h_slope']*100:.2f}%, "
-            f"z8_4h {m['z8_4h']:.2f}, rvol {m['rvol_4h']:.2f}, "
-            f"fr {m['funding_rate']*100:.4f}%)")
+            f"z8 {m['z8_4h']:.2f}, OI {m.get('oi_change_24h',0)*100:.1f}%, "
+            f"RS {m.get('rs_vs_btc',1.0):.2f}x, fr {m['funding_rate']*100:.4f}%)")
         if d == allowed and pts >= 7:
             cands.append((pts, s, d, m))
+        elif d == allowed and 5 <= pts <= 6:
+            watchlist.append((pts, s, d, m))
+
+    # Watchlist alert: coins 1-2 points from triggering an entry
+    if watchlist and LIVE:
+        wl_text = "\n".join(
+            f"  {s}/USDT {dd} {p}/8 — OI {m.get('oi_change_24h',0)*100:.1f}%, RS {m.get('rs_vs_btc',1.0):.2f}x"
+            for p, s, dd, m in sorted(watchlist, key=lambda x: -x[0])[:5])
+        tg(f"👁 <b>WATCHLIST</b>\nCoins near entry (score 5-6/8):\n{wl_text}")
     cands.sort(key=lambda c: -c[0])
 
     adv = rj("correlation-advisory.json", {}).get("positions", {})
@@ -265,8 +287,8 @@ def main():
         # Use 4h ATR for stop distance — appropriate for 1-3 day holds
         atr14 = m["atr14_4h"]
         sl = min(max(atr14 * 1.5 / price, 0.015), 0.06)
-        risk_usd = equity * 0.015
-        qty = min(risk_usd / (price * sl), (free * 0.8 * LEVERAGE) / price)
+        risk_usd = equity * 0.015 * vol_scale
+        qty = min(risk_usd / (price * sl), (free * 0.8 * LEVERAGE * vol_scale) / price)
         qty_s   = ex.amount_to_precision(sym, qty)
         price_s = ex.price_to_precision(sym, price)
         qty, price_f = float(qty_s), float(price_s)

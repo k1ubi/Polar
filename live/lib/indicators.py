@@ -104,6 +104,45 @@ def funding_rate(exchange, symbol: str) -> float:
         return 0.0
 
 
+def oi_change_pct(exchange, symbol: str) -> float:
+    """Return 24h open interest % change. Positive = OI growing (new money entering).
+    Returns 0.0 on failure (treat as neutral)."""
+    try:
+        hist = exchange.fetch_open_interest_history(symbol, "4h", limit=7)
+        if len(hist) >= 7:
+            old = float(hist[0].get("openInterestValue") or hist[0].get("openInterest", 0))
+            cur = float(hist[-1].get("openInterestValue") or hist[-1].get("openInterest", 0))
+            return (cur - old) / old if old > 0 else 0.0
+    except Exception:
+        pass
+    return 0.0
+
+
+def btc_realized_vol_ann(exchange) -> float:
+    """Annualised 20-day realized volatility of BTC. Used to scale position size in high-vol regimes."""
+    try:
+        bars = fetch_bars(exchange, "BTC/USDT:USDT", "1d", 22)
+        log_ret = np.diff(np.log(bars["close"].astype(float)))[-20:]
+        daily_vol = float(log_ret.std())
+        return daily_vol * (365 ** 0.5)  # annualise
+    except Exception:
+        return 0.5  # assume 50% annualised as a neutral default
+
+
+def relative_strength_vs_btc(close_coin: np.ndarray, close_btc: np.ndarray, period: int = 20) -> float:
+    """Return coin/BTC performance ratio over `period` bars.
+    > 1.0 means coin outperforming BTC. Used as a momentum confirmation.
+    """
+    n = min(len(close_coin), len(close_btc), period + 1)
+    if n < 2:
+        return 1.0
+    coin_ret = (close_coin[-1] - close_coin[-n]) / close_coin[-n] if close_coin[-n] > 0 else 0.0
+    btc_ret  = (close_btc[-1]  - close_btc[-n])  / close_btc[-n]  if close_btc[-n]  > 0 else 0.0
+    if btc_ret == 0:
+        return 1.0
+    return float((1 + coin_ret) / (1 + btc_ret))
+
+
 def compute_scan(exchange, symbols: list) -> dict:
     """Compute all scan metrics for a list of BASE symbols.
 
@@ -127,12 +166,14 @@ def compute_scan(exchange, symbols: list) -> dict:
             b1h = fetch_bars(exchange, sym, "1h",  50)
             b4h = fetch_bars(exchange, sym, "4h",  60)
             b1d = fetch_bars(exchange, sym, "1d",  30)
+            oi_chg = oi_change_pct(exchange, sym)
 
             ema20_4h_arr  = ema_array(b4h["close"], 20)
             slope_lookback = 5  # ~20 hours
             ema20_4h_slope = (ema20_4h_arr[-1] - ema20_4h_arr[-1 - slope_lookback]) / ema20_4h_arr[-1]
 
             btc_corr = correlation(btc4h["close"], b4h["close"]) if btc4h is not None else 0.0
+            rs_vs_btc = relative_strength_vs_btc(b4h["close"], btc4h["close"], 20) if btc4h is not None else 1.0
             fr = funding_rate(exchange, sym)
 
             # Weekly EMA-50 as a hard macro filter
@@ -159,6 +200,8 @@ def compute_scan(exchange, symbols: list) -> dict:
                 "atr14_4h":        atr(b4h["high"], b4h["low"], b4h["close"], 14),
                 "atr14_15m":       atr(b15["high"], b15["low"], b15["close"], 14),
                 "btc_corr":        btc_corr,
+                "rs_vs_btc":       rs_vs_btc,
+                "oi_change_24h":   oi_chg,
                 "funding_rate":    fr,
             }
         except Exception as e:

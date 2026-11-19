@@ -549,6 +549,30 @@ def run():
             request_close(base, side, "regime_shift", price, entry, upnl, requests)
             return True
 
+        # Funding extreme exit: when carry cost is extreme, the position is dangerously crowded
+        # Long paying > 0.1%/8h = ~109%/year; short paying > 0.05%/8h = ~55%/year
+        try:
+            fr_data = _broker._ex().fetch_funding_rate(f"{base}/USDT:USDT")
+            fr = float(fr_data.get("fundingRate", 0))
+            fr_extreme = (not short and fr > 0.001) or (short and fr < -0.0005)
+            if fr_extreme and base not in requests:
+                request_close(base, side,
+                              f"funding_extreme ({fr*100:.4f}%/8h)",
+                              price, entry, upnl, requests)
+                return True
+        except Exception:
+            pass
+
+        # Time-based exit: zombie positions tie up margin and bleed funding
+        # If we've held 10+ 4h bars (~40h) and PnL < -0.3R, request close
+        entered_at = p.get("entered_at") or "1970-01-01T00:00:00Z"
+        held_hours = (now() - parse(entered_at)).total_seconds() / 3600
+        loss_r = -upnl / (sl * 100) if sl > 0 else 0  # how many R down
+        if held_hours > 40 and loss_r > 0.3 and base not in requests:
+            request_close(base, side,
+                          f"time_stop (held {held_hours:.0f}h, down {loss_r:.1f}R)",
+                          price, entry, upnl, requests)
+
         favour = ((entry - price) if short else (price - entry)) / entry
         if not p.get("breakeven_done") and favour >= sl:
             p["stop_level"], p["breakeven_done"] = entry, True
