@@ -3,7 +3,7 @@
 Professional approach: scan ALL perpetuals on Bitget, filter by liquidity,
 rank by open interest + 30-day momentum. The coins worth trading self-select.
 """
-import sys
+import sys, json, time
 from pathlib import Path
 
 # ── constants ──────────────────────────────────────────────────────────────────
@@ -21,12 +21,28 @@ _EXCLUDE = {"USDC", "USDT", "BUSD", "DAI", "TUSD", "USDP", "FDUSD", "PYUSD",
             "BTCDOM", "ETHBTC"}
 
 
+_CACHE_TTL = 86_400  # rebuild universe once per day
+
+
 def build(exchange, state_dir=None) -> list:
     """Return sorted list of BASE symbols to scan.
 
     Priority: FORCE_INCLUDE first, then top-OI liquid coins.
     Falls back to a minimal default if the API call fails.
+
+    The result is cached for 24 h in state_dir/universe-cache.json so the
+    4-hour scanner doesn't pay the full OI-fetch cost every run.
     """
+    cache_file = Path(state_dir) / "universe-cache.json" if state_dir else None
+    if cache_file and cache_file.exists():
+        try:
+            cached = json.loads(cache_file.read_text())
+            if time.time() - cached.get("ts", 0) < _CACHE_TTL and cached.get("symbols"):
+                print(f"universe: loaded {len(cached['symbols'])} coins from cache", file=sys.stderr)
+                return cached["symbols"]
+        except Exception:
+            pass
+
     try:
         markets = exchange.load_markets()
         tickers = exchange.fetch_tickers()
@@ -93,6 +109,11 @@ def build(exchange, state_dir=None) -> list:
         return _fallback()
 
     print(f"universe: {len(result)} coins (OI+momentum ranked)", file=sys.stderr)
+    if cache_file:
+        try:
+            cache_file.write_text(json.dumps({"ts": time.time(), "symbols": result}))
+        except Exception:
+            pass
     return result
 
 

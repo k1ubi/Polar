@@ -17,8 +17,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 from config import TG_TOKEN as BOT_TOKEN, TG_CHAT as _CHAT
 OWNER_CHAT_ID = int(_CHAT) if _CHAT else 0
 STATE_DIR = Path("/home/kyubi/Polar/live/state")
-ISSUES_DIR = Path("/home/kyubi/.openalice/workspaces/workspaces/chat-tidy-silver-cove/.alice/issues")
 BINANCE_PRICE = "https://api.binance.com/api/v3/ticker/price?symbol="
+BITGET_TICKER = "https://api.bitget.com/api/v2/mix/market/ticker?symbol={base}USDT&productType=USDT-FUTURES"
 
 
 def load_json(path, default=None):
@@ -46,28 +46,48 @@ def load_jsonl(path):
 
 
 async def live_price(sym: str) -> float:
-    """Fetch last price from Binance public API. sym = 'BTC/USDT:USDT' -> 'BTCUSDT'"""
+    """Fetch mark price. Tries Binance first, falls back to Bitget, then state file."""
     base = sym.split('/')[0]
-    binance_sym = base + "USDT"
+    # 1. Try Binance (faster, public)
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=4)) as s:
-            async with s.get(BINANCE_PRICE + binance_sym) as r:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as s:
+            async with s.get(BINANCE_PRICE + base + "USDT") as r:
                 if r.status == 200:
-                    d = await r.json()
-                    return float(d["price"])
+                    return float((await r.json())["price"])
     except Exception:
         pass
-    return 0.0
+    # 2. Try Bitget public ticker
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as s:
+            url = BITGET_TICKER.format(base=base)
+            async with s.get(url) as r:
+                if r.status == 200:
+                    d = await r.json()
+                    return float(d["data"][0]["lastPr"])
+    except Exception:
+        pass
+    # 3. Last-known price from guardian state
+    return float(load_json(STATE_DIR / "last-prices.json", {}).get(base, 0))
+
+
+async def live_prices(syms: list) -> dict:
+    """Fetch all prices concurrently. Returns {sym: price}."""
+    prices = await asyncio.gather(*[live_price(s) for s in syms])
+    return dict(zip(syms, prices))
 
 
 MAIN_KEYBOARD = InlineKeyboardMarkup([
     [
         InlineKeyboardButton("📊 Positions", callback_data="positions"),
-        InlineKeyboardButton("📋 Report",    callback_data="report"),
+        InlineKeyboardButton("💰 Equity",    callback_data="equity"),
     ],
     [
         InlineKeyboardButton("👁 Monitor",   callback_data="monitor"),
         InlineKeyboardButton("📈 Metrics",   callback_data="metrics"),
+    ],
+    [
+        InlineKeyboardButton("🌊 Regime",    callback_data="regime"),
+        InlineKeyboardButton("📋 Report",    callback_data="report"),
     ],
     [
         InlineKeyboardButton("⚙️ Services",  callback_data="services"),
@@ -77,8 +97,9 @@ MAIN_KEYBOARD = InlineKeyboardMarkup([
 
 CHAT_BAR_KEYBOARD = ReplyKeyboardMarkup(
     [
-        [KeyboardButton("📊 Positions"), KeyboardButton("📋 Report")],
+        [KeyboardButton("📊 Positions"), KeyboardButton("💰 Equity")],
         [KeyboardButton("👁 Monitor"),   KeyboardButton("📈 Metrics")],
+        [KeyboardButton("🌊 Regime"),    KeyboardButton("📋 Report")],
         [KeyboardButton("⚙️ Services"),  KeyboardButton("Decisions ⚖️")],
     ],
     resize_keyboard=True,
@@ -87,9 +108,11 @@ CHAT_BAR_KEYBOARD = ReplyKeyboardMarkup(
 
 CHAT_BAR_ACTIONS = {
     "📊 Positions": "positions",
-    "📋 Report":    "report",
+    "💰 Equity":    "equity",
     "👁 Monitor":   "monitor",
     "📈 Metrics":   "metrics",
+    "🌊 Regime":    "regime",
+    "📋 Report":    "report",
     "⚙️ Services":  "services",
     "Decisions ⚖️": "decisions",
 }
@@ -126,6 +149,14 @@ async def button_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action.split(":")[0] in DECISION_KINDS:
         await _decision_button(query, action)
         return
+    if action == "cancelno":
+        await query.edit_message_text("↩️ Cancelled.")
+        return
+    if action.startswith("cancelok:"):
+        parts = action.split(":", 2)  # cancelok, base, order_key
+        if len(parts) == 3:
+            await _do_cancel_entry(query, parts[1], parts[2])
+        return
     if action == "decisions":
         await _send_decisions(query.message)
         return
@@ -134,9 +165,11 @@ async def button_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     fake_update._effective_message = query.message
     dispatch = {
         "positions": _positions_text,
+        "equity":    _equity_text,
         "report":    _report_text,
         "monitor":   _monitor_text,
         "metrics":   _metrics_text,
+        "regime":    _regime_text,
         "services":  _services_text,
     }
     if action in dispatch:
@@ -150,35 +183,111 @@ async def button_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── Shared text-building helpers (used by both commands and buttons) ─────────
 
+def _fmt_price(p):
+    if not p:
+        return "—"
+    s = f"{p:.6g}"
+    return "$" + s
+
+
 async def _positions_text():
     positions = load_json(STATE_DIR / "open-positions.json", {})
     if not positions:
         return "📭 No open positions.", "HTML"
+    syms = [pos.get("symbol", pid) for pid, pos in positions.items()]
+    prices = await live_prices(syms)
     lines = ["📊 <b>Open Positions</b>\n"]
     for pid, pos in positions.items():
-        sym = pos.get("symbol", pid)
-        side = pos.get("side", "?").upper()
-        entry = pos.get("entry_price", 0)
-        qty = pos.get("qty", 0)
-        stop = pos.get("stop_level", 0)
-        tp = pos.get("tp_level", 0)
+        sym   = pos.get("symbol", pid)
+        side  = pos.get("side", "?").upper()
+        entry = float(pos.get("entry_price", 0) or 0)
+        qty   = pos.get("qty", 0)
+        stop  = float(pos.get("stop_level", 0) or 0)
+        tp1   = float(pos.get("tp1_level", 0) or 0)
+        tp2   = float(pos.get("tp2_level", 0) or pos.get("tp_level", 0) or 0)
         score = pos.get("score", "?")
-        live = await live_price(sym)
+        live  = prices.get(sym, 0)
+        base  = sym.split("/")[0]
+        side_emoji = "🔼" if side == "LONG" else "🔽"
         if entry and live:
             pnl_pct = ((live - entry) / entry * 100) if side == "LONG" else ((entry - live) / entry * 100)
-            pnl_str = f"+{pnl_pct:.2f}%" if pnl_pct >= 0 else f"{pnl_pct:.2f}%"
+            pnl_str = f"{pnl_pct:+.2f}%"
             pnl_emoji = "🟢" if pnl_pct >= 0 else "🔴"
         else:
             pnl_str, pnl_emoji = "N/A", "⚪"
-        side_emoji = "🔼" if side == "LONG" else "🔽"
+        flags = []
+        if pos.get("partial_tp_done"):
+            flags.append("TP1 ✅")
+        if pos.get("breakeven_done"):
+            flags.append("BE locked")
+        flag_str = f"  <i>{', '.join(flags)}</i>" if flags else ""
+        # R multiple
+        sl = float(pos.get("sl_distance_pct", 0) or 0)
+        r_str = ""
+        if sl and entry and live:
+            r_mult = (pnl_pct / 100) / sl if sl > 0 else 0
+            r_str = f"  ({r_mult:+.1f}R)"
         lines.append(
-            f"{side_emoji} <b>{sym.split('/')[0]}</b> {side}\n"
-            f"  Entry: <code>${entry:.4f}</code>  Live: <code>${live:.4f}</code>\n"
-            f"  {pnl_emoji} PnL: {pnl_str}  Qty: {qty}\n"
-            f"  SL watch: <code>${stop:.4f}</code>  TP: <code>${tp:.4f}</code>\n"
-            f"  Score: {score}/8\n"
+            f"{side_emoji} <b>{base}</b> {side}{flag_str}\n"
+            f"  Entry {_fmt_price(entry)} → Live {_fmt_price(live)}  {pnl_emoji} {pnl_str}{r_str}\n"
+            f"  SL: {_fmt_price(stop)}  TP1: {_fmt_price(tp1)}  TP2: {_fmt_price(tp2)}\n"
+            f"  Qty: {qty}  Score: {score}/8\n"
         )
     return "\n".join(lines), "HTML"
+
+
+async def _equity_text():
+    mc   = load_json(STATE_DIR / "metrics-cache.json", {})
+    hist = []
+    try:
+        for line in (STATE_DIR / "portfolio-history.jsonl").read_text().splitlines():
+            if line.strip():
+                hist.append(json.loads(line))
+    except Exception:
+        pass
+    net_liq = mc.get("net_liq", 0)
+    cb      = load_json(STATE_DIR / "circuit-breaker.json", {})
+    dd_str  = ""
+    if hist:
+        last24 = [r["net_liq"] for r in hist[-96:]]  # ~24h at 15min intervals
+        if last24:
+            peak = max(last24)
+            dd   = (peak - net_liq) / peak * 100 if peak else 0
+            dd_str = f"\n24h drawdown: {dd:.2f}% from peak ${peak:.2f}"
+    cb_line = "\n🛑 <b>Circuit breaker HALTED</b>" if cb.get("halted") else ""
+    upnl = mc.get("unrealized_pnl", 0) if hasattr(mc, "get") else 0
+    longs  = mc.get("long_count", 0)
+    shorts = mc.get("short_count", 0)
+    return (
+        f"💰 <b>Equity</b>\n\n"
+        f"Net liquidation: <b>${net_liq:.2f}</b>\n"
+        f"Unrealized PnL: {f'+${upnl:.2f}' if upnl >= 0 else f'-${abs(upnl):.2f}'}\n"
+        f"{dd_str}"
+        f"\nPositions: {longs} long / {shorts} short{cb_line}"
+    ), "HTML"
+
+
+async def _regime_text():
+    r = load_json(STATE_DIR / "regime.json", {})
+    if not r:
+        return "🌊 Regime data not available yet. Run regime.py first.", "HTML"
+    reg   = r.get("regime", "UNKNOWN")
+    conf  = r.get("confidence", 0)
+    score = r.get("score", 0)
+    at    = str(r.get("updated_at", r.get("at", "?")))[:16]
+    emoji = "🐂" if reg == "BULLISH" else "🐻" if reg == "BEARISH" else "🤷"
+    factors = r.get("factors", {})
+    factor_lines = ""
+    if factors:
+        factor_lines = "\n" + "\n".join(
+            f"  {'✅' if v else '❌'} {k}" for k, v in factors.items()
+        )
+    return (
+        f"{emoji} <b>Regime: {reg}</b>\n"
+        f"Score: {score}/5  Confidence: {conf}/10\n"
+        f"Updated: {at}Z"
+        f"{factor_lines}"
+    ), "HTML"
 
 
 async def _report_text():
@@ -235,11 +344,8 @@ async def _monitor_text():
             "No pending entry orders.", "HTML"
         )
 
-    # Fetch live prices concurrently
-    syms = {order.get("symbol", oid): None for oid, order in pending.items()}
-    prices = {}
-    for sym in syms:
-        prices[sym] = await live_price(sym)
+    syms   = [order.get("symbol", oid) for oid, order in pending.items()]
+    prices = await live_prices(syms)
 
     # Build rows with distance to fill
     rows = []
@@ -359,14 +465,7 @@ def _job_line(unit, label, max_min):
 
 async def _services_text():
     lines = ["⚙️ <b>Services Status</b>\n"]
-    try:
-        r = subprocess.run(["openalice", "status"], capture_output=True, text=True, timeout=5)
-        running = "running" in r.stdout.lower()
-        version = next((l.split(":", 1)[1].strip() for l in r.stdout.splitlines() if "Version:" in l), "")
-        lines.append(f"{'🟢' if running else '🔴'} OpenAlice Runtime {version}")
-    except Exception as e:
-        lines.append(f"🔴 OpenAlice Runtime — {e}")
-    for svc in ["openalice", "polar-bot", "polar-user-bot"]:
+    for svc in ["polar-bot", "polar-user-bot"]:
         try:
             r = subprocess.run(
                 ["systemctl", "--user", "is-active", f"{svc}.service"],
@@ -378,17 +477,17 @@ async def _services_text():
             lines.append(f"⚪ {svc}.service")
     lines.append("\n🤖 <b>Trading jobs</b>")
     lines += [_job_line(*j) for j in POLAR_JOBS]
-    try:
-        active_issues = []
-        for f in ISSUES_DIR.glob("*.md"):
-            content = f.read_text()
-            if ("status: todo" in content or "status: in_progress" in content) and "when:" in content:
-                active_issues.append(f.stem)
-        lines.append(f"\n📋 OpenAlice scheduled issues: {len(active_issues)}")
-        for iss in active_issues:
-            lines.append(f"  • {iss} (weekly AI report)" if iss == "performance-reporter" else f"  • {iss}")
-    except Exception:
-        pass
+    # State summary
+    opens  = len(load_json(STATE_DIR / "open-positions.json",  {}))
+    pend   = len(load_json(STATE_DIR / "pending-orders.json",  {}))
+    reqs   = len(load_json(STATE_DIR / "close-requests.json",  {}))
+    pause  = load_json(STATE_DIR / "pause.json", {}).get("paused", False)
+    cb     = load_json(STATE_DIR / "circuit-breaker.json", {}).get("halted", False)
+    lines.append(
+        f"\n📂 State: {opens} open | {pend} pending | {reqs} requests"
+        + (" | ⏸ PAUSED" if pause else "")
+        + (" | 🛑 CB HALTED" if cb else "")
+    )
     return "\n".join(lines), "HTML"
 
 
@@ -398,10 +497,21 @@ async def _services_text():
 #   Leave and don't ask me again -> muted for this position until it is closed (asks to confirm first)
 DECISION_KINDS = ("dc", "dcy", "dl", "dm", "dmy", "dback")
 REASON_WORDS = {
-    "stop_breach": "the price is past the stop level",
-    "regime_shift": "the market regime turned against this position",
-    "partial_1R": "it reached 1R profit, so take half off",
+    "stop_breach":   "the price is past the stop level",
+    "regime_shift":  "the market regime turned against this position",
+    "partial_1R":    "it reached 1R profit — take half off",
+    "partial_tp_done": "TP1 filled — this closes the remaining runner",
 }
+
+def _reason_text(reason: str) -> str:
+    for k, v in REASON_WORDS.items():
+        if reason.startswith(k):
+            return v
+    if "funding_extreme" in reason:
+        return f"funding is extreme ({reason}) — the position is dangerously crowded"
+    if "time_stop" in reason:
+        return f"it's been too long without progress ({reason})"
+    return reason
 
 
 def _mutate(name, fn):
@@ -489,9 +599,15 @@ async def _decision_card(base, r):
         status = f"🟢 You chose Leave {_ago(r.get('rejected_at', ''))} ago. I may ask again after 6 h if it is still true."
     else:
         status = f"⏳ Waiting for your decision (asked {_ago(r.get('requested_at', ''))} ago)."
-    text = (f"⚖️ <b>{base} {side}</b> — I am asking to close because {REASON_WORDS.get(r.get('reason'), r.get('reason', '?'))}.\n"
-            f"Entry <code>${entry:.4f}</code>  {now_line}\n"
-            f"Stop watch <code>${p.get('stop_level', 0):.4f}</code>  TP <code>${p.get('tp_level', 0):.4f}</code>\n"
+    tp1   = _fmt_price(p.get("tp1_level") or p.get("tp_level"))
+    tp2   = _fmt_price(p.get("tp2_level") or p.get("tp_level"))
+    flags = []
+    if p.get("partial_tp_done"): flags.append("TP1 done ✅")
+    if p.get("breakeven_done"):  flags.append("stop @ breakeven 🛡")
+    flag_str = f"  <i>{', '.join(flags)}</i>" if flags else ""
+    text = (f"⚖️ <b>{base} {side}</b> — I am asking to close because {_reason_text(r.get('reason', '?'))}.\n"
+            f"Entry <code>${entry:.4f}</code>  {now_line}{flag_str}\n"
+            f"Stop watch {_fmt_price(p.get('stop_level', 0))}  TP1 {tp1}  TP2 {tp2}\n"
             f"If you tap Close: <b>{what}</b>.\n{status}")
     return text, _decision_kb(base, r)
 
@@ -619,6 +735,36 @@ def _pending_requests_text():
     return "\n".join(lines)
 
 
+async def _do_cancel_entry(query, base: str, order_key: str):
+    """Cancel a pending entry order and remove it from state."""
+    sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+    try:
+        import broker as _broker
+        ex = _broker._ex()
+        pend = load_json(STATE_DIR / "pending-orders.json", {})
+        entry = pend.get(order_key)
+        if not entry:
+            await query.edit_message_text(f"No pending entry for {base} any more (already filled/cancelled?).")
+            return
+        order_id = entry.get("order_id") or entry.get("aliceId", "")
+        sym = entry.get("symbol", f"{base}/USDT:USDT")
+        try:
+            if order_id:
+                ex.cancel_order(str(order_id), sym)
+        except Exception as e:
+            if "not found" not in str(e).lower() and "already" not in str(e).lower():
+                await query.edit_message_text(f"⚠️ Failed to cancel on exchange: {e}\nEntry NOT removed from tracking.")
+                return
+        del pend[order_key]
+        _write_json(STATE_DIR / "pending-orders.json", pend)
+        await query.edit_message_text(
+            f"✅ <b>{base}</b> pending entry cancelled. Order {order_id} removed from tracking.",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        await query.edit_message_text(f"❌ Cancel failed: {e}")
+
+
 async def _close_button(query, action):
     """Inline-button flow for guardian close requests: ap (ask confirm) -> apy (approve), rj (reject), no (cancel)."""
     kind, _, base = action.partition(":")
@@ -716,6 +862,60 @@ async def cmd_resume(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("▶️ Pause cleared. Scanner may place new entries again.\n\n" + _pending_requests_text())
 
 
+@only_owner
+async def cmd_pause(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    reason = " ".join(ctx.args) if ctx.args else "manual"
+    _write_json(STATE_DIR / "pause.json", {
+        "paused": True, "reason": reason,
+        "since": datetime.now(timezone.utc).isoformat(), "by": "lorenzo",
+    })
+    await update.message.reply_text(f"⏸ Paused — <b>{reason}</b>. No new entries. Use /resume to unpause.", parse_mode="HTML")
+
+
+@only_owner
+async def cmd_equity(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    text, mode = await _equity_text()
+    await update.message.reply_text(text, parse_mode=mode, reply_markup=MAIN_KEYBOARD)
+
+
+@only_owner
+async def cmd_regime(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    text, mode = await _regime_text()
+    await update.message.reply_text(text, parse_mode=mode, reply_markup=MAIN_KEYBOARD)
+
+
+@only_owner
+async def cmd_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Cancel a pending entry order. Usage: /cancel BTC"""
+    if not ctx.args:
+        pend = load_json(STATE_DIR / "pending-orders.json", {})
+        if not pend:
+            await update.message.reply_text("No pending entry orders.")
+            return
+        lines = ["Pending entries (use /cancel SYMBOL to cancel one):"]
+        for k, e in pend.items():
+            sym = e.get("symbol", k).split("/")[0]
+            lines.append(f"• {sym} {e.get('side','?')} @ ${e.get('limit_price',0):.4f}")
+        await update.message.reply_text("\n".join(lines))
+        return
+    base = ctx.args[0].upper()
+    pend = load_json(STATE_DIR / "pending-orders.json", {})
+    target = {k: e for k, e in pend.items() if e.get("symbol", "").split("/")[0] == base}
+    if not target:
+        await update.message.reply_text(f"No pending entry order for {base}.")
+        return
+    key, entry = next(iter(target.items()))
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton(f"✅ Yes, cancel {base} entry", callback_data=f"cancelok:{base}:{key}"),
+        InlineKeyboardButton("↩️ No", callback_data="cancelno"),
+    ]])
+    await update.message.reply_text(
+        f"Cancel pending entry: <b>{base}</b> {entry.get('side','?')} @ ${entry.get('limit_price',0):.4f}?\n"
+        "The order on the exchange will be cancelled and removed from tracking.",
+        parse_mode="HTML", reply_markup=kb,
+    )
+
+
 async def _run(app: Application):
     async with app:
         await app.start()
@@ -748,13 +948,17 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start",     cmd_start))
     app.add_handler(CommandHandler("positions", cmd_positions))
+    app.add_handler(CommandHandler("equity",    cmd_equity))
     app.add_handler(CommandHandler("report",    cmd_report))
     app.add_handler(CommandHandler("monitor",   cmd_monitor))
     app.add_handler(CommandHandler("metrics",   cmd_metrics))
+    app.add_handler(CommandHandler("regime",    cmd_regime))
     app.add_handler(CommandHandler("services",  cmd_services))
     app.add_handler(CommandHandler("approve",   cmd_approve))
     app.add_handler(CommandHandler("reject",    cmd_reject))
+    app.add_handler(CommandHandler("pause",     cmd_pause))
     app.add_handler(CommandHandler("resume",    cmd_resume))
+    app.add_handler(CommandHandler("cancel",    cmd_cancel))
     app.add_handler(CommandHandler("decisions", cmd_decisions))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(

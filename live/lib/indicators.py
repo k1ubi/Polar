@@ -1,6 +1,7 @@
 """Pure-numpy indicator library — replaces OpenAlice `alice analysis quant` scripts."""
 import sys
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 # ── bar fetching ─────────────────────────────────────────────────────────────
@@ -143,69 +144,77 @@ def relative_strength_vs_btc(close_coin: np.ndarray, close_btc: np.ndarray, peri
     return float((1 + coin_ret) / (1 + btc_ret))
 
 
-def compute_scan(exchange, symbols: list) -> dict:
+def _scan_one(exchange, base: str, btc4h) -> tuple:
+    """Fetch and compute all metrics for a single coin. Returns (base, metrics_dict) or (base, None)."""
+    sym = f"{base}/USDT:USDT"
+    try:
+        b15    = fetch_bars(exchange, sym, "15m", 50)
+        b1h    = fetch_bars(exchange, sym, "1h",  50)
+        b4h    = fetch_bars(exchange, sym, "4h",  60)
+        b1d    = fetch_bars(exchange, sym, "1d",  30)
+        oi_chg = oi_change_pct(exchange, sym)
+        fr     = funding_rate(exchange, sym)
+
+        ema20_4h_arr   = ema_array(b4h["close"], 20)
+        slope_lookback = 5
+        ema20_4h_slope = (ema20_4h_arr[-1] - ema20_4h_arr[-1 - slope_lookback]) / ema20_4h_arr[-1]
+
+        btc_corr  = correlation(btc4h["close"], b4h["close"]) if btc4h is not None else 0.0
+        rs_vs_btc = relative_strength_vs_btc(b4h["close"], btc4h["close"], 20) if btc4h is not None else 1.0
+
+        try:
+            b1w          = fetch_bars(exchange, sym, "1w", 60)
+            weekly_ema50 = ema(b1w["close"], 50)
+            weekly_above = float(b1d["close"][-1]) > weekly_ema50
+        except Exception:
+            weekly_ema50 = float(b1d["close"][-1])
+            weekly_above = True
+
+        return base, {
+            "price":          float(b4h["close"][-1]),
+            "rsi_4h":         rsi(b4h["close"], 14),
+            "rsi_1h":         rsi(b1h["close"], 14),
+            "z8_4h":          zscore(b4h["close"], 8),
+            "z20_4h":         zscore(b4h["close"], 20),
+            "rvol_4h":        rvol(b4h["volume"], 20),
+            "ema20_4h":       float(ema20_4h_arr[-1]),
+            "ema20_4h_slope": float(ema20_4h_slope),
+            "ema20_1d":       ema(b1d["close"], 20),
+            "weekly_ema50":   float(weekly_ema50),
+            "weekly_above":   weekly_above,
+            "atr14_4h":       atr(b4h["high"], b4h["low"], b4h["close"], 14),
+            "atr14_15m":      atr(b15["high"], b15["low"], b15["close"], 14),
+            "btc_corr":       btc_corr,
+            "rs_vs_btc":      rs_vs_btc,
+            "oi_change_24h":  oi_chg,
+            "funding_rate":   fr,
+        }
+    except Exception as e:
+        print(f"indicators.scan {base}: {e}", file=sys.stderr)
+        return base, None
+
+
+def compute_scan(exchange, symbols: list, workers: int = 6) -> dict:
     """Compute all scan metrics for a list of BASE symbols.
 
-    4h/daily strategy metrics returned per symbol:
-    {price, rsi_4h, rsi_1h, z8_4h, z20_4h, ema20_4h, ema20_4h_slope,
-     ema20_1d, atr14_4h, atr14_15m, rvol_4h, btc_corr, funding_rate}
-
-    Symbols that fail are silently omitted.
+    Uses a thread pool to fetch coins concurrently — reduces wall time from
+    ~3 min (sequential, 40 coins) to ~30 s.  ccxt's rate limiter is per-object,
+    so all threads share the same exchange instance and its built-in sleep.
+    workers=6 is conservative; Bitget allows ~20 req/s.
     """
-    result = {}
     try:
         btc4h = fetch_bars(exchange, "BTC/USDT:USDT", "4h", 60)
     except Exception as e:
         print(f"indicators: BTC bars failed: {e}", file=sys.stderr)
         btc4h = None
 
-    for base in symbols:
-        sym = f"{base}/USDT:USDT"
-        try:
-            b15 = fetch_bars(exchange, sym, "15m", 50)
-            b1h = fetch_bars(exchange, sym, "1h",  50)
-            b4h = fetch_bars(exchange, sym, "4h",  60)
-            b1d = fetch_bars(exchange, sym, "1d",  30)
-            oi_chg = oi_change_pct(exchange, sym)
-
-            ema20_4h_arr  = ema_array(b4h["close"], 20)
-            slope_lookback = 5  # ~20 hours
-            ema20_4h_slope = (ema20_4h_arr[-1] - ema20_4h_arr[-1 - slope_lookback]) / ema20_4h_arr[-1]
-
-            btc_corr = correlation(btc4h["close"], b4h["close"]) if btc4h is not None else 0.0
-            rs_vs_btc = relative_strength_vs_btc(b4h["close"], btc4h["close"], 20) if btc4h is not None else 1.0
-            fr = funding_rate(exchange, sym)
-
-            # Weekly EMA-50 as a hard macro filter
-            try:
-                b1w = fetch_bars(exchange, sym, "1w", 60)
-                weekly_ema50 = ema(b1w["close"], 50)
-                weekly_above = float(b1d["close"][-1]) > weekly_ema50
-            except Exception:
-                weekly_ema50 = float(b1d["close"][-1])
-                weekly_above = True  # fail open if weekly data unavailable
-
-            result[base] = {
-                "price":           float(b4h["close"][-1]),
-                "rsi_4h":          rsi(b4h["close"], 14),
-                "rsi_1h":          rsi(b1h["close"], 14),
-                "z8_4h":           zscore(b4h["close"], 8),
-                "z20_4h":          zscore(b4h["close"], 20),
-                "rvol_4h":         rvol(b4h["volume"], 20),
-                "ema20_4h":        float(ema20_4h_arr[-1]),
-                "ema20_4h_slope":  float(ema20_4h_slope),
-                "ema20_1d":        ema(b1d["close"], 20),
-                "weekly_ema50":    float(weekly_ema50),
-                "weekly_above":    weekly_above,
-                "atr14_4h":        atr(b4h["high"], b4h["low"], b4h["close"], 14),
-                "atr14_15m":       atr(b15["high"], b15["low"], b15["close"], 14),
-                "btc_corr":        btc_corr,
-                "rs_vs_btc":       rs_vs_btc,
-                "oi_change_24h":   oi_chg,
-                "funding_rate":    fr,
-            }
-        except Exception as e:
-            print(f"indicators.scan {base}: {e}", file=sys.stderr)
+    result = {}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_scan_one, exchange, base, btc4h): base for base in symbols}
+        for fut in as_completed(futures):
+            base, metrics = fut.result()
+            if metrics is not None:
+                result[base] = metrics
     return result
 
 
